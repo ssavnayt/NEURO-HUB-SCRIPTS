@@ -1,0 +1,161 @@
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+
+-- 1. Удаляем старую кнопку
+if CoreGui:FindFirstChild("PriorityRaceGui") then
+    CoreGui.PriorityRaceGui:Destroy()
+end
+
+-- Настройки
+_G.AutoRaceEnabled = false
+local FLY_SPEED = 300 
+local HEIGHT_OFFSET = 15
+local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
+local TARGET_GREEN = Color3.fromRGB(55, 400, 0)
+local TOLERANCE = 25
+
+-- Создаем интерфейс
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PriorityRaceGui"
+ScreenGui.Parent = CoreGui
+
+local Button = Instance.new("TextButton")
+Button.Size = UDim2.new(0, 200, 0, 50)
+Button.Position = UDim2.new(0.5, -100, 0.05, 0)
+Button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Button.Text = "AUTO RACE: OFF"
+Button.TextColor3 = Color3.new(1, 1, 1)
+Button.Font = Enum.Font.SourceSansBold
+Button.TextSize = 16
+Button.Draggable = true
+Button.Active = true
+Button.Parent = ScreenGui
+
+local Corner = Instance.new("UICorner")
+Corner.Parent = Button
+
+-- Проверка конкретного цвета
+local function isBlue(c)
+    if not c then return false end
+    return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and 
+           math.abs(c.G*255 - TARGET_BLUE.G*255) <= TOLERANCE and 
+           math.abs(c.B*255 - TARGET_BLUE.B*255) <= TOLERANCE
+end
+
+local function isGreen(c)
+    if not c then return false end
+    -- Учет "неонового" зеленого (G > 200)
+    if c.G * 255 > 200 and c.R * 255 < 100 then return true end
+    return math.abs(c.R*255 - TARGET_GREEN.R*255) <= TOLERANCE and 
+           math.abs(c.G*255 - TARGET_GREEN.G*255) <= TOLERANCE and 
+           math.abs(c.B*255 - TARGET_GREEN.B*255) <= TOLERANCE
+end
+
+local currentCar = nil
+
+-- Noclip (работает в фоне)
+RunService.Stepped:Connect(function()
+    if _G.AutoRaceEnabled and currentCar then
+        for _, part in pairs(currentCar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- Функция полета
+local function flyTo(car, targetPart)
+    local root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+    if not root then return end
+
+    local targetPos = targetPart.Position + Vector3.new(0, HEIGHT_OFFSET, 0)
+    local direction = (targetPos - root.Position)
+    
+    if direction.Magnitude > 3 then
+        root.AssemblyLinearVelocity = direction.Unit * FLY_SPEED
+        local lookAtPos = Vector3.new(targetPart.Position.X, root.Position.Y, targetPart.Position.Z)
+        root.CFrame = CFrame.lookAt(root.Position, lookAtPos)
+    else
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+end
+
+-- ГЛАВНАЯ ЛОГИКА ПОИСКА (Приоритет: Синий -> Зеленый)
+local function findBestCheckpoint()
+    local blueTarget = nil
+    local greenTarget = nil
+
+    for _, race in pairs(workspace.Races:GetChildren()) do
+        local cpFolder = race:FindFirstChild("Checkpoints")
+        if cpFolder then
+            for _, cp in pairs(cpFolder:GetChildren()) do
+                local inner = cp:FindFirstChild("Inner")
+                if inner then
+                    local b = inner:FindFirstChild("Base")
+                    local e = inner:FindFirstChild("Expand")
+                    local function getCol(o) return (o:IsA("Part") or o:IsA("MeshPart")) and o.Color or o.Color3 end
+                    
+                    local colorB = b and getCol(b)
+                    local colorE = e and getCol(e)
+
+                    -- Сначала ищем синий
+                    if isBlue(colorB) or isBlue(colorE) then
+                        blueTarget = inner
+                        break -- Нашли синий, можно выходить из этого цикла
+                    end
+                    
+                    -- Если синего пока нет, запоминаем зеленый "на всякий случай"
+                    if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then
+                        greenTarget = inner
+                    end
+                end
+            end
+        end
+        if blueTarget then break end -- Если нашли синий в этой гонке, другие не смотрим
+    end
+
+    -- Возвращаем синий если есть, иначе зеленый
+    return blueTarget or greenTarget
+end
+
+-- Цикл
+local function startLoop()
+    while _G.AutoRaceEnabled do
+        task.wait()
+        
+        local myCar = nil
+        for _, car in pairs(workspace.Cars:GetChildren()) do
+            local d = car:FindFirstChild("CurrentDriver")
+            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
+                myCar = car
+                break
+            end
+        end
+
+        currentCar = myCar
+
+        if myCar then
+            local target = findBestCheckpoint()
+            if target then
+                flyTo(myCar, target)
+            end
+        end
+    end
+    currentCar = nil
+end
+
+-- Кнопка
+Button.MouseButton1Click:Connect(function()
+    _G.AutoRaceEnabled = not _G.AutoRaceEnabled
+    if _G.AutoRaceEnabled then
+        Button.Text = "PRIORITY RACE: ON"
+        Button.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+        task.spawn(startLoop)
+    else
+        Button.Text = "PRIORITY RACE: OFF"
+        Button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    end
+end)
