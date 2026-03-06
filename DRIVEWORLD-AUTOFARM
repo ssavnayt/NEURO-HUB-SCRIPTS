@@ -2,39 +2,48 @@ local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
--- Удаляем старое меню
+-- Очистка старого GUI
 if CoreGui:FindFirstChild("SmartRaceGuiPro") then
     CoreGui.SmartRaceGuiPro:Destroy()
 end
 
--- Настройки
-_G.AutoRaceEnabled = false
+-- Глобальные переключатели
+_G.SmartRaceEnabled = false
+_G.AutoCheckpointEnabled = false
+_G.NoclipEnabled = false
 _G.PlayerFrozen = false
 
-local FLY_SPEED = 300 
+-- Настройки
+local MIN_SPEED = 100
+local MAX_SPEED = 2500
+local FLY_SPEED = 300 -- Начальная скорость
 local DEFAULT_HEIGHT = 15
-local STUCK_HEIGHT = 50
 local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
 local TARGET_GREEN = Color3.fromRGB(55, 400, 0)
 local TOLERANCE = 25
 
-local currentHeight = DEFAULT_HEIGHT
-local lastTarget = nil
-local targetStartTime = 0
+-- Точка ожидания (Лобби)
+local WAITING_CFRAME = CFrame.new(
+    -1147.74719, 0.751161933, 2038.3446, 
+    -1.1920929e-07, -1.00000012, 0, 
+    -1.00000012, -1.1920929e-07, 0, 
+    -0, 0, -1.00000024
+)
+
 local currentCar = nil
 local noclipConnection = nil
 
--- === СОЗДАЕМ ИНТЕРФЕЙС ===
+-- --- GUI ИНТЕРФЕЙС ---
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SmartRaceGuiPro"
 ScreenGui.Parent = CoreGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 110)
+MainFrame.Size = UDim2.new(0, 220, 0, 270) -- Увеличил высоту для слайдера
 MainFrame.Position = UDim2.new(0.5, -110, 0.05, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
@@ -50,19 +59,43 @@ Layout.Padding = UDim.new(0, 10)
 Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Layout.VerticalAlignment = Enum.VerticalAlignment.Center
 
--- Кнопка 1: Авто-гонка
-local RaceButton = Instance.new("TextButton")
-RaceButton.Size = UDim2.new(0, 200, 0, 40)
-RaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-RaceButton.Text = "SMART RACE: OFF"
-RaceButton.TextColor3 = Color3.new(1, 1, 1)
-RaceButton.Font = Enum.Font.SourceSansBold
-RaceButton.TextSize = 16
-RaceButton.Parent = MainFrame
-local CornerRace = Instance.new("UICorner")
-CornerRace.Parent = RaceButton
+-- 1. SMART RACE
+local SmartRaceButton = Instance.new("TextButton")
+SmartRaceButton.Size = UDim2.new(0, 200, 0, 40)
+SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+SmartRaceButton.Text = "SMART RACE: OFF"
+SmartRaceButton.TextColor3 = Color3.new(1, 1, 1)
+SmartRaceButton.Font = Enum.Font.SourceSansBold
+SmartRaceButton.TextSize = 16
+SmartRaceButton.Parent = MainFrame
+local CornerSR = Instance.new("UICorner")
+CornerSR.Parent = SmartRaceButton
 
--- Кнопка 2: Заморозка
+-- 2. AUTO CHECKPOINT
+local AutoCPButton = Instance.new("TextButton")
+AutoCPButton.Size = UDim2.new(0, 200, 0, 40)
+AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
+AutoCPButton.TextColor3 = Color3.new(1, 1, 1)
+AutoCPButton.Font = Enum.Font.SourceSansBold
+AutoCPButton.TextSize = 16
+AutoCPButton.Parent = MainFrame
+local CornerCP = Instance.new("UICorner")
+CornerCP.Parent = AutoCPButton
+
+-- 3. NOCLIP
+local NoclipButton = Instance.new("TextButton")
+NoclipButton.Size = UDim2.new(0, 200, 0, 40)
+NoclipButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+NoclipButton.Text = "NOCLIP: OFF"
+NoclipButton.TextColor3 = Color3.new(1, 1, 1)
+NoclipButton.Font = Enum.Font.SourceSansBold
+NoclipButton.TextSize = 16
+NoclipButton.Parent = MainFrame
+local CornerNC = Instance.new("UICorner")
+CornerNC.Parent = NoclipButton
+
+-- 4. FREEZE
 local FreezeButton = Instance.new("TextButton")
 FreezeButton.Size = UDim2.new(0, 200, 0, 40)
 FreezeButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -71,11 +104,96 @@ FreezeButton.TextColor3 = Color3.new(1, 1, 1)
 FreezeButton.Font = Enum.Font.SourceSansBold
 FreezeButton.TextSize = 16
 FreezeButton.Parent = MainFrame
-local CornerFreeze = Instance.new("UICorner")
-CornerFreeze.Parent = FreezeButton
+local CornerFZ = Instance.new("UICorner")
+CornerFZ.Parent = FreezeButton
+
+-- 5. SLIDER (Контейнер)
+local SliderContainer = Instance.new("Frame")
+SliderContainer.Size = UDim2.new(0, 200, 0, 50)
+SliderContainer.BackgroundTransparency = 1
+SliderContainer.Parent = MainFrame
+
+local SpeedLabel = Instance.new("TextLabel")
+SpeedLabel.Size = UDim2.new(1, 0, 0, 20)
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.Text = "SPEED: " .. FLY_SPEED
+SpeedLabel.TextColor3 = Color3.new(1, 1, 1)
+SpeedLabel.Font = Enum.Font.SourceSansBold
+SpeedLabel.TextSize = 14
+SpeedLabel.Parent = SliderContainer
+
+local SliderBar = Instance.new("Frame")
+SliderBar.Size = UDim2.new(1, 0, 0, 10)
+SliderBar.Position = UDim2.new(0, 0, 0.5, 0)
+SliderBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+SliderBar.BorderSizePixel = 0
+SliderBar.Parent = SliderContainer
+local CornerBar = Instance.new("UICorner")
+CornerBar.CornerRadius = UDim.new(1, 0)
+CornerBar.Parent = SliderBar
+
+local SliderFill = Instance.new("Frame")
+SliderFill.Size = UDim2.new(0, 0, 1, 0) -- Начинаем с 0, обновим скриптом
+SliderFill.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+SliderFill.BorderSizePixel = 0
+SliderFill.Parent = SliderBar
+local CornerFill = Instance.new("UICorner")
+CornerFill.CornerRadius = UDim.new(1, 0)
+CornerFill.Parent = SliderFill
+
+local SliderButton = Instance.new("TextButton")
+SliderButton.Size = UDim2.new(1, 0, 1, 0)
+SliderButton.BackgroundTransparency = 1
+SliderButton.Text = ""
+SliderButton.Parent = SliderBar -- Кнопка поверх полоски для кликов
+
+-- --- ЛОГИКА СЛАЙДЕРА ---
+local function updateSlider(input)
+    local sliderX = SliderBar.AbsolutePosition.X
+    local sliderWidth = SliderBar.AbsoluteSize.X
+    local inputX = input.Position.X
+    
+    -- Вычисляем процент заполнения (0..1)
+    local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
+    
+    -- Вычисляем скорость
+    local newSpeed = math.floor(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * percent)
+    
+    -- Применяем
+    FLY_SPEED = newSpeed
+    SpeedLabel.Text = "SPEED: " .. newSpeed
+    SliderFill.Size = UDim2.new(percent, 0, 1, 0)
+end
+
+-- Инициализация начальной позиции ползунка
+local startPercent = (FLY_SPEED - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)
+SliderFill.Size = UDim2.new(startPercent, 0, 1, 0)
+
+local draggingSlider = false
+
+SliderButton.MouseButton1Down:Connect(function()
+    draggingSlider = true
+    -- Сразу обновляем при клике
+    local mouse = Players.LocalPlayer:GetMouse()
+    local input = {Position = Vector3.new(mouse.X, mouse.Y, 0)} -- Эмуляция input объекта
+    updateSlider(input)
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
+        updateSlider(input)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingSlider = false
+    end
+end)
 
 
--- === ЛОГИКА ЦВЕТОВ ===
+-- --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
 local function isBlue(c)
     if not c then return false end
     return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and 
@@ -91,54 +209,58 @@ local function isGreen(c)
            math.abs(c.B*255 - TARGET_GREEN.B*255) <= TOLERANCE
 end
 
--- === УПРАВЛЕНИЕ NOCLIP ===
-local function toggleNoclip(state)
-    if state then
-        -- Включаем ноуклип (каждый кадр)
-        noclipConnection = RunService.Stepped:Connect(function()
-            -- Ноуклип для машины
-            if currentCar then
-                for _, part in pairs(currentCar:GetDescendants()) do
-                    if part:IsA("BasePart") then part.CanCollide = false end
+local function findBestCheckpoint()
+    local blueTarget = nil
+    local greenTarget = nil
+
+    if workspace:FindFirstChild("Races") then
+        for _, race in pairs(workspace.Races:GetChildren()) do
+            local cpFolder = race:FindFirstChild("Checkpoints")
+            if cpFolder then
+                for _, cp in pairs(cpFolder:GetChildren()) do
+                    local inner = cp:FindFirstChild("Inner")
+                    if inner then
+                        local b = inner:FindFirstChild("Base")
+                        local e = inner:FindFirstChild("Expand")
+                        local function getCol(o)
+                            return (o:IsA("Part") or o:IsA("MeshPart")) and o.Color or o.Color3
+                        end
+                        local colorB = b and getCol(b)
+                        local colorE = e and getCol(e)
+
+                        if isBlue(colorB) or isBlue(colorE) then
+                            blueTarget = inner
+                            break 
+                        end
+                        if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then
+                            greenTarget = inner
+                        end
+                    end
                 end
             end
-            -- Ноуклип для игрока
-            local char = Players.LocalPlayer.Character
-            if char then
-                for _, part in pairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") then part.CanCollide = false end
-                end
-            end
-        end)
-    else
-        -- Выключаем ноуклип и ВОЗВРАЩАЕМ коллизию
-        if noclipConnection then
-            noclipConnection:Disconnect()
-            noclipConnection = nil
+            if blueTarget then break end
         end
-        
-        -- Возвращаем физику машине
-        if currentCar then
-            for _, part in pairs(currentCar:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = true end
-            end
-        end
-        -- Возвращаем физику игроку
-        local char = Players.LocalPlayer.Character
-        if char then
-            for _, part in pairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = true end
+    end
+    return blueTarget or greenTarget
+end
+
+local function getMyCar()
+    if workspace:FindFirstChild("Cars") then
+        for _, car in pairs(workspace.Cars:GetChildren()) do
+            local d = car:FindFirstChild("CurrentDriver")
+            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
+                return car
             end
         end
     end
+    return nil
 end
 
--- === ЛОГИКА ПОЛЕТА ===
 local function flyTo(car, targetPart)
     local root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
     if not root then return end
 
-    local targetPos = targetPart.Position + Vector3.new(0, currentHeight, 0)
+    local targetPos = targetPart.Position + Vector3.new(0, DEFAULT_HEIGHT, 0)
     local direction = (targetPos - root.Position)
     
     if direction.Magnitude > 5 then
@@ -147,117 +269,181 @@ local function flyTo(car, targetPart)
         root.CFrame = CFrame.lookAt(root.Position, lookAtPos)
     else
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-        currentHeight = DEFAULT_HEIGHT 
     end
 end
 
--- === ПОИСК ЧЕКПОИНТА ===
-local function findBestCheckpoint()
-    local blueTarget = nil
-    local greenTarget = nil
-
-    for _, race in pairs(workspace.Races:GetChildren()) do
-        local cpFolder = race:FindFirstChild("Checkpoints")
-        if cpFolder then
-            for _, cp in pairs(cpFolder:GetChildren()) do
-                local inner = cp:FindFirstChild("Inner")
-                if inner then
-                    local b = inner:FindFirstChild("Base")
-                    local e = inner:FindFirstChild("Expand")
-                    local function getCol(o) return (o:IsA("Part") or o:IsA("MeshPart")) and o.Color or o.Color3 end
-                    
-                    local colorB = b and getCol(b)
-                    local colorE = e and getCol(e)
-
-                    if isBlue(colorB) or isBlue(colorE) then
-                        blueTarget = inner
-                        break 
-                    end
-                    if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then
-                        greenTarget = inner
+-- --- NOCLIP MANAGER ---
+local function updateNoclip(state)
+    if state then
+        if not noclipConnection then
+            noclipConnection = RunService.Stepped:Connect(function()
+                local car = getMyCar()
+                if car then
+                    for _, part in pairs(car:GetDescendants()) do
+                        if part:IsA("BasePart") then part.CanCollide = false end
                     end
                 end
-            end
-        end
-        if blueTarget then break end
-    end
-    return blueTarget or greenTarget
-end
-
--- === ГЛАВНЫЙ ЦИКЛ ГОНКИ ===
-local function startLoop()
-    while _G.AutoRaceEnabled do
-        task.wait()
-        
-        local myCar = nil
-        for _, car in pairs(workspace.Cars:GetChildren()) do
-            local d = car:FindFirstChild("CurrentDriver")
-            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
-                myCar = car
-                break
-            end
-        end
-
-        currentCar = myCar
-
-        if myCar then
-            local target = findBestCheckpoint()
-            
-            if target then
-                if target ~= lastTarget then
-                    lastTarget = target
-                    targetStartTime = tick()
-                    currentHeight = DEFAULT_HEIGHT 
-                else
-                    if tick() - targetStartTime > 10 then
-                        if currentHeight ~= STUCK_HEIGHT then
-                            currentHeight = STUCK_HEIGHT
-                        end
+                local char = Players.LocalPlayer.Character
+                if char then
+                    for _, part in pairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") then part.CanCollide = false end
                     end
                 end
-                
-                flyTo(myCar, target)
-            end
+            end)
         end
-    end
-    -- При выходе из цикла сбрасываем всё
-    toggleNoclip(false)
-    currentCar = nil
-end
-
--- === ОБРАБОТЧИКИ КНОПОК ===
-
--- Кнопка Авто-гонки
-RaceButton.MouseButton1Click:Connect(function()
-    _G.AutoRaceEnabled = not _G.AutoRaceEnabled
-    if _G.AutoRaceEnabled then
-        RaceButton.Text = "SMART RACE: ON"
-        RaceButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-        toggleNoclip(true) -- Включаем ноуклип
-        task.spawn(startLoop)
     else
-        RaceButton.Text = "SMART RACE: OFF"
-        RaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-        toggleNoclip(false) -- Отключаем ноуклип
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
+        -- Принудительный возврат коллизии
+        local char = Players.LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then part.CanCollide = true end
+            end
+        end
+        local car = getMyCar()
+        if car then
+            for _, part in pairs(car:GetDescendants()) do
+                if part:IsA("BasePart") then part.CanCollide = true end
+            end
+        end
+    end
+end
+
+-- --- ЛОГИКА 1: SMART RACE ---
+local function startSmartRaceLoop()
+    while _G.SmartRaceEnabled do
+        local target = findBestCheckpoint()
+        local char = Players.LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if not target then
+            if hrp then
+                hrp.Anchored = true
+                if (hrp.Position - WAITING_CFRAME.Position).Magnitude > 10 then
+                    hrp.CFrame = WAITING_CFRAME
+                end
+                hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
+            end
+            updateNoclip(false)
+            task.wait(0.1)
+        else
+            if hrp then hrp.Anchored = false end
+            for i = 1, 70 do 
+                if not _G.SmartRaceEnabled then break end
+                task.wait(0.1)
+            end
+            if not _G.SmartRaceEnabled then break end
+
+            updateNoclip(true)
+            local missingTime = 0 
+            
+            while _G.SmartRaceEnabled do
+                target = findBestCheckpoint()
+                if target then
+                    missingTime = 0 
+                    local myCar = getMyCar()
+                    if myCar then flyTo(myCar, target) end
+                else
+                    local dt = task.wait()
+                    missingTime = missingTime + dt
+                    if missingTime > 2 then break end 
+                    
+                    local myCar = getMyCar()
+                    if myCar and myCar.PrimaryPart then
+                        myCar.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0)
+                    end
+                    continue
+                end
+                task.wait()
+            end
+        end
+        task.wait()
+    end
+    updateNoclip(false)
+end
+
+-- --- ЛОГИКА 2: AUTO CHECKPOINT ---
+local function startAutoCPLoop()
+    while _G.AutoCheckpointEnabled do
+        local target = findBestCheckpoint()
+        local car = getMyCar()
+        
+        if target and car then
+            flyTo(car, target)
+        elseif car and car.PrimaryPart then
+            car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0)
+        end
+        task.wait()
+    end
+end
+
+-- --- ОБРАБОТКА КНОПОК ---
+
+SmartRaceButton.MouseButton1Click:Connect(function()
+    _G.SmartRaceEnabled = not _G.SmartRaceEnabled
+    if _G.SmartRaceEnabled then
+        if _G.AutoCheckpointEnabled then
+            _G.AutoCheckpointEnabled = false
+            AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
+            AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        end
+        SmartRaceButton.Text = "SMART RACE: ON"
+        SmartRaceButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+        task.spawn(startSmartRaceLoop)
+    else
+        SmartRaceButton.Text = "SMART RACE: OFF"
+        SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        updateNoclip(false)
+        local char = Players.LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char.HumanoidRootPart.Anchored = false
+        end
     end
 end)
 
--- Управление заморозкой
+AutoCPButton.MouseButton1Click:Connect(function()
+    _G.AutoCheckpointEnabled = not _G.AutoCheckpointEnabled
+    if _G.AutoCheckpointEnabled then
+        if _G.SmartRaceEnabled then
+            _G.SmartRaceEnabled = false
+            SmartRaceButton.Text = "SMART RACE: OFF"
+            SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        end
+        AutoCPButton.Text = "AUTO CHECKPOINT: ON"
+        AutoCPButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+        task.spawn(startAutoCPLoop)
+    else
+        AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
+        AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    end
+end)
+
+NoclipButton.MouseButton1Click:Connect(function()
+    _G.NoclipEnabled = not _G.NoclipEnabled
+    updateNoclip(_G.NoclipEnabled)
+    if _G.NoclipEnabled then
+        NoclipButton.Text = "NOCLIP: ON"
+        NoclipButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+    else
+        NoclipButton.Text = "NOCLIP: OFF"
+        NoclipButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    end
+end)
+
 local function setFreeze(state)
     local char = Players.LocalPlayer.Character
     if char then
         local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            hrp.Anchored = state
-        end
+        if hrp then hrp.Anchored = state end
     end
 end
 
--- Кнопка Заморозки
 FreezeButton.MouseButton1Click:Connect(function()
     _G.PlayerFrozen = not _G.PlayerFrozen
     setFreeze(_G.PlayerFrozen)
-    
     if _G.PlayerFrozen then
         FreezeButton.Text = "FREEZE PLAYER: ON"
         FreezeButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
@@ -267,12 +453,9 @@ FreezeButton.MouseButton1Click:Connect(function()
     end
 end)
 
--- Поддержка заморозки после смерти/респавна
 Players.LocalPlayer.CharacterAdded:Connect(function(char)
     if _G.PlayerFrozen then
         local hrp = char:WaitForChild("HumanoidRootPart", 5)
-        if hrp then
-            hrp.Anchored = true
-        end
+        if hrp then hrp.Anchored = true end
     end
 end)
