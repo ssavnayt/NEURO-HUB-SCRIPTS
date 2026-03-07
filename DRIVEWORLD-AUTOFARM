@@ -3,6 +3,8 @@ local Players = game:GetService("Players")
 local workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local GuiService = game:GetService("GuiService")
 
 -- Очистка старого GUI
 if CoreGui:FindFirstChild("SmartRaceGuiPro") then
@@ -12,8 +14,10 @@ end
 -- Глобальные переключатели
 _G.SmartRaceEnabled = false
 _G.AutoCheckpointEnabled = false
+_G.AutoFlyEnabled = false
 _G.NoclipEnabled = false
 _G.PlayerFrozen = false
+_G.SmartRaceTPd = false
 
 -- Настройки
 local MIN_SPEED = 100
@@ -32,6 +36,14 @@ local WAITING_CFRAME = CFrame.new(
     -0, 0, -1.00000024
 )
 
+local gobutton = game:GetService("Players").LocalPlayer.PlayerGui.LiveQueue.Center.Teleport
+local gobutpos = gobutton.AbsolutePosition
+local gobutsize = gobutton.AbsoluteSize
+local gobuty = gobutpos.Y + gobutsize.Y / 2
+local gobutx = gobutpos.X + gobutsize.X / 2
+local inset = GuiService:GetGuiInset()
+gobuty = gobuty + inset.Y
+
 local currentCar = nil
 local noclipConnection = nil
 
@@ -41,7 +53,7 @@ ScreenGui.Name = "SmartRaceGuiPro"
 ScreenGui.Parent = CoreGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 270) -- Увеличил высоту для слайдера
+MainFrame.Size = UDim2.new(0, 220, 0, 480)
 MainFrame.Position = UDim2.new(0.5, -110, 0.05, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 MainFrame.Active = true
@@ -83,7 +95,19 @@ AutoCPButton.Parent = MainFrame
 local CornerCP = Instance.new("UICorner")
 CornerCP.Parent = AutoCPButton
 
--- 3. NOCLIP
+-- 3. AUTO FLY
+local AutoFlyButton = Instance.new("TextButton")
+AutoFlyButton.Size = UDim2.new(0, 200, 0, 40)
+AutoFlyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+AutoFlyButton.Text = "AUTO FLY: OFF"
+AutoFlyButton.TextColor3 = Color3.new(1, 1, 1)
+AutoFlyButton.Font = Enum.Font.SourceSansBold
+AutoFlyButton.TextSize = 16
+AutoFlyButton.Parent = MainFrame
+local CornerAF = Instance.new("UICorner")
+CornerAF.Parent = AutoFlyButton
+
+-- 4. NOCLIP
 local NoclipButton = Instance.new("TextButton")
 NoclipButton.Size = UDim2.new(0, 200, 0, 40)
 NoclipButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -95,7 +119,7 @@ NoclipButton.Parent = MainFrame
 local CornerNC = Instance.new("UICorner")
 CornerNC.Parent = NoclipButton
 
--- 4. FREEZE
+-- 5. FREEZE
 local FreezeButton = Instance.new("TextButton")
 FreezeButton.Size = UDim2.new(0, 200, 0, 40)
 FreezeButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -107,7 +131,47 @@ FreezeButton.Parent = MainFrame
 local CornerFZ = Instance.new("UICorner")
 CornerFZ.Parent = FreezeButton
 
--- 5. SLIDER (Контейнер)
+--RESETBUTTON
+
+local ShopResetButton = Instance.new("TextButton")
+ShopResetButton.Size = UDim2.new(0, 200, 0, 40)
+ShopResetButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+ShopResetButton.Text = "SHOP RESET (TEST)"
+ShopResetButton.TextColor3 = Color3.new(1, 1, 1)
+ShopResetButton.Font = Enum.Font.SourceSansBold
+ShopResetButton.TextSize = 16
+ShopResetButton.Parent = MainFrame
+local CornerSR = Instance.new("UICorner")
+CornerSR.Parent = ShopResetButton
+
+--SERVER EXIT CAR
+
+local ExitCarButton = Instance.new("TextButton")
+ExitCarButton.Size = UDim2.new(0, 200, 0, 40)
+ExitCarButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+ExitCarButton.Text = "Server Exit Car"
+ExitCarButton.TextColor3 = Color3.new(1, 1, 1)
+ExitCarButton.Font = Enum.Font.SourceSansBold
+ExitCarButton.TextSize = 16
+ExitCarButton.Parent = MainFrame
+local CornerEB = Instance.new("UICorner")
+CornerEB.Parent = ExitCarButton
+
+--SERVER AFK
+
+local AFKButton = Instance.new("TextButton")
+AFKButton.Size = UDim2.new(0, 200, 0, 40)
+AFKButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+AFKButton.Text = "ServerSide AFK"
+AFKButton.TextColor3 = Color3.new(1, 1, 1)
+AFKButton.Font = Enum.Font.SourceSansBold
+AFKButton.TextSize = 16
+AFKButton.Parent = MainFrame
+local CornerAB = Instance.new("UICorner")
+CornerAB.Parent = AFKButton
+
+
+-- 6. SLIDER
 local SliderContainer = Instance.new("Frame")
 SliderContainer.Size = UDim2.new(0, 200, 0, 50)
 SliderContainer.BackgroundTransparency = 1
@@ -116,7 +180,7 @@ SliderContainer.Parent = MainFrame
 local SpeedLabel = Instance.new("TextLabel")
 SpeedLabel.Size = UDim2.new(1, 0, 0, 20)
 SpeedLabel.BackgroundTransparency = 1
-SpeedLabel.Text = "SPEED: " .. FLY_SPEED
+SpeedLabel.Text = "SPEED/POWER: " .. FLY_SPEED
 SpeedLabel.TextColor3 = Color3.new(1, 1, 1)
 SpeedLabel.Font = Enum.Font.SourceSansBold
 SpeedLabel.TextSize = 14
@@ -133,7 +197,7 @@ CornerBar.CornerRadius = UDim.new(1, 0)
 CornerBar.Parent = SliderBar
 
 local SliderFill = Instance.new("Frame")
-SliderFill.Size = UDim2.new(0, 0, 1, 0) -- Начинаем с 0, обновим скриптом
+SliderFill.Size = UDim2.new(0, 0, 1, 0)
 SliderFill.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
 SliderFill.BorderSizePixel = 0
 SliderFill.Parent = SliderBar
@@ -145,37 +209,29 @@ local SliderButton = Instance.new("TextButton")
 SliderButton.Size = UDim2.new(1, 0, 1, 0)
 SliderButton.BackgroundTransparency = 1
 SliderButton.Text = ""
-SliderButton.Parent = SliderBar -- Кнопка поверх полоски для кликов
+SliderButton.Parent = SliderBar
 
 -- --- ЛОГИКА СЛАЙДЕРА ---
 local function updateSlider(input)
     local sliderX = SliderBar.AbsolutePosition.X
     local sliderWidth = SliderBar.AbsoluteSize.X
     local inputX = input.Position.X
-    
-    -- Вычисляем процент заполнения (0..1)
     local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
-    
-    -- Вычисляем скорость
     local newSpeed = math.floor(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * percent)
     
-    -- Применяем
     FLY_SPEED = newSpeed
-    SpeedLabel.Text = "SPEED: " .. newSpeed
+    SpeedLabel.Text = "SPEED/POWER: " .. newSpeed
     SliderFill.Size = UDim2.new(percent, 0, 1, 0)
 end
 
--- Инициализация начальной позиции ползунка
 local startPercent = (FLY_SPEED - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)
 SliderFill.Size = UDim2.new(startPercent, 0, 1, 0)
-
 local draggingSlider = false
 
 SliderButton.MouseButton1Down:Connect(function()
     draggingSlider = true
-    -- Сразу обновляем при клике
     local mouse = Players.LocalPlayer:GetMouse()
-    local input = {Position = Vector3.new(mouse.X, mouse.Y, 0)} -- Эмуляция input объекта
+    local input = {Position = Vector3.new(mouse.X, mouse.Y, 0)}
     updateSlider(input)
 end)
 
@@ -212,7 +268,6 @@ end
 local function findBestCheckpoint()
     local blueTarget = nil
     local greenTarget = nil
-
     if workspace:FindFirstChild("Races") then
         for _, race in pairs(workspace.Races:GetChildren()) do
             local cpFolder = race:FindFirstChild("Checkpoints")
@@ -227,14 +282,8 @@ local function findBestCheckpoint()
                         end
                         local colorB = b and getCol(b)
                         local colorE = e and getCol(e)
-
-                        if isBlue(colorB) or isBlue(colorE) then
-                            blueTarget = inner
-                            break 
-                        end
-                        if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then
-                            greenTarget = inner
-                        end
+                        if isBlue(colorB) or isBlue(colorE) then blueTarget = inner break end
+                        if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then greenTarget = inner end
                     end
                 end
             end
@@ -259,14 +308,11 @@ end
 local function flyTo(car, targetPart)
     local root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
     if not root then return end
-
     local targetPos = targetPart.Position + Vector3.new(0, DEFAULT_HEIGHT, 0)
     local direction = (targetPos - root.Position)
-    
     if direction.Magnitude > 5 then
         root.AssemblyLinearVelocity = direction.Unit * FLY_SPEED
-        local lookAtPos = Vector3.new(targetPart.Position.X, root.Position.Y, targetPart.Position.Z)
-        root.CFrame = CFrame.lookAt(root.Position, lookAtPos)
+        root.CFrame = CFrame.lookAt(root.Position, Vector3.new(targetPart.Position.X, root.Position.Y, targetPart.Position.Z))
     else
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     end
@@ -278,37 +324,17 @@ local function updateNoclip(state)
         if not noclipConnection then
             noclipConnection = RunService.Stepped:Connect(function()
                 local car = getMyCar()
-                if car then
-                    for _, part in pairs(car:GetDescendants()) do
-                        if part:IsA("BasePart") then part.CanCollide = false end
-                    end
-                end
+                if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
                 local char = Players.LocalPlayer.Character
-                if char then
-                    for _, part in pairs(char:GetDescendants()) do
-                        if part:IsA("BasePart") then part.CanCollide = false end
-                    end
-                end
+                if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
             end)
         end
     else
-        if noclipConnection then
-            noclipConnection:Disconnect()
-            noclipConnection = nil
-        end
-        -- Принудительный возврат коллизии
+        if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
         local char = Players.LocalPlayer.Character
-        if char then
-            for _, part in pairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = true end
-            end
-        end
+        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Name ~= "DoorMain" and part.Name ~= "Exhaust" and part.Name ~= "Main" and part.Name ~= "Stars" and part.Name ~= "Contrast" then part.CanCollide = true end end end
         local car = getMyCar()
-        if car then
-            for _, part in pairs(car:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = true end
-            end
-        end
+        if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end end
     end
 end
 
@@ -321,9 +347,11 @@ local function startSmartRaceLoop()
 
         if not target then
             if hrp then
-                hrp.Anchored = true
-                if (hrp.Position - WAITING_CFRAME.Position).Magnitude > 10 then
-                    hrp.CFrame = WAITING_CFRAME
+                if gobutton.Visible == true and _G.SmartRaceTPd == false then
+                    _G.SmartRaceTPd = true
+                    VirtualInputManager:SendMouseButtonEvent(gobutx, gobuty, 0, true, game, 1)
+                    task.wait(0.1)
+                    VirtualInputManager:SendMouseButtonEvent(gobutx, gobuty, 0, false, game, 1)
                 end
                 hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
             end
@@ -331,15 +359,10 @@ local function startSmartRaceLoop()
             task.wait(0.1)
         else
             if hrp then hrp.Anchored = false end
-            for i = 1, 70 do 
-                if not _G.SmartRaceEnabled then break end
-                task.wait(0.1)
-            end
+            for i = 1, 70 do if not _G.SmartRaceEnabled then break end task.wait(0.1) end
             if not _G.SmartRaceEnabled then break end
-
             updateNoclip(true)
             local missingTime = 0 
-            
             while _G.SmartRaceEnabled do
                 target = findBestCheckpoint()
                 if target then
@@ -350,11 +373,9 @@ local function startSmartRaceLoop()
                     local dt = task.wait()
                     missingTime = missingTime + dt
                     if missingTime > 2 then break end 
-                    
                     local myCar = getMyCar()
-                    if myCar and myCar.PrimaryPart then
-                        myCar.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0)
-                    end
+                    if myCar and myCar.PrimaryPart then myCar.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end
+                    _G.SmartRaceTPd = false
                     continue
                 end
                 task.wait()
@@ -370,26 +391,105 @@ local function startAutoCPLoop()
     while _G.AutoCheckpointEnabled do
         local target = findBestCheckpoint()
         local car = getMyCar()
-        
-        if target and car then
-            flyTo(car, target)
-        elseif car and car.PrimaryPart then
-            car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0)
-        end
+        if target and car then flyTo(car, target)
+        elseif car and car.PrimaryPart then car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end
         task.wait()
+    end
+end
+
+-- --- ЛОГИКА 3: AUTO FLY (Разгон -> Стоп -> Повтор) ---
+local function startAutoFlyLoop()
+    -- 1. ЗАПОМИНАЕМ ТОЧКУ ЗЕМЛИ ПРИ ВКЛЮЧЕНИИ
+    local char = Players.LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local startCF = hrp and hrp.CFrame or WAITING_CFRAME
+
+    while _G.AutoFlyEnabled do
+        char = Players.LocalPlayer.Character
+        hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if hrp then
+            -- 2. ТЕЛЕПОРТ НА ЗЕМЛЮ И СБРОС СКОРОСТИ
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            hrp.CFrame = startCF
+            task.wait(0.2) -- Маленькая пауза перед запуском
+
+            -- 3. РАЗГОН ВВЕРХ (ЗАПУСК)
+            if _G.AutoFlyEnabled then
+                hrp.AssemblyLinearVelocity = Vector3.new(0, FLY_SPEED, 0)
+                
+                -- Ждем пока пролетит немного (1.5 сек)
+                task.wait(1.5)
+            end
+            
+            -- 4. ОСТАНОВКА (Сброс скорости в 0)
+            if _G.AutoFlyEnabled and hrp then
+                hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                task.wait(0.5) -- Висим полсекунды
+            end
+        end
+        -- 5. ЦИКЛ ПОВТОРЯЕТСЯ (Снова п.2: Телепорт на землю...)
+        task.wait()
+    end
+
+    -- 6. ЕСЛИ ВЫКЛЮЧИЛИ: Возврат на землю
+    char = Players.LocalPlayer.Character
+    hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.CFrame = startCF
+    end
+end
+
+-- --- ОТКЛЮЧЕНИЕ РЕЖИМОВ ---
+local function disableAllModes(exclude)
+    if exclude ~= "SmartRace" then
+        _G.SmartRaceEnabled = false
+        SmartRaceButton.Text = "SMART RACE: OFF"
+        SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    end
+    if exclude ~= "AutoCheckpoint" then
+        _G.AutoCheckpointEnabled = false
+        AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
+        AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    end
+    if exclude ~= "AutoFly" then
+        _G.AutoFlyEnabled = false
+        AutoFlyButton.Text = "AUTO FLY: OFF"
+        AutoFlyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
     end
 end
 
 -- --- ОБРАБОТКА КНОПОК ---
 
+AFKButton.MouseButton1Click:Connect(function()
+    AFKButton.Text = "Setting AFK..."
+    game:GetService("ReplicatedStorage").Systems.Social.PlayerToggledAFK:FireServer("Ping")
+    AFKButton.Text = "AFK Setted Up!"
+    task.wait(1)
+    AFKButton.Text = "ServerSide AFK"
+end)
+
+ShopResetButton.MouseButton1Click:Connect(function()
+    ShopResetButton.Text = "Resetting..."
+    game:GetService("ReplicatedStorage").Systems.Shop.ResetShopData:InvokeServer("Ping")
+    ShopResetButton.Text = "Reseted!"
+    task.wait(1)
+    ShopResetButton.Text = "SHOP RESET (TEST)"
+end)
+
+ExitCarButton.MouseButton1Click:Connect(function()
+    ExitCarButton.Text = "Exiting car..."
+    game:GetService("ReplicatedStorage").Systems.Cars.ExitCar:InvokeServer("Ping")
+    ExitCarButton.Text = "Exited car!"
+    task.wait(1)
+    ExitCarButton.Text = "Server Exit Car"
+end)
+
 SmartRaceButton.MouseButton1Click:Connect(function()
     _G.SmartRaceEnabled = not _G.SmartRaceEnabled
     if _G.SmartRaceEnabled then
-        if _G.AutoCheckpointEnabled then
-            _G.AutoCheckpointEnabled = false
-            AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
-            AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-        end
+        disableAllModes("SmartRace")
         SmartRaceButton.Text = "SMART RACE: ON"
         SmartRaceButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
         task.spawn(startSmartRaceLoop)
@@ -398,26 +498,33 @@ SmartRaceButton.MouseButton1Click:Connect(function()
         SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
         updateNoclip(false)
         local char = Players.LocalPlayer.Character
-        if char and char:FindFirstChild("HumanoidRootPart") then
-            char.HumanoidRootPart.Anchored = false
-        end
+        if char and char:FindFirstChild("HumanoidRootPart") then char.HumanoidRootPart.Anchored = false end
     end
 end)
 
 AutoCPButton.MouseButton1Click:Connect(function()
     _G.AutoCheckpointEnabled = not _G.AutoCheckpointEnabled
     if _G.AutoCheckpointEnabled then
-        if _G.SmartRaceEnabled then
-            _G.SmartRaceEnabled = false
-            SmartRaceButton.Text = "SMART RACE: OFF"
-            SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-        end
+        disableAllModes("AutoCheckpoint")
         AutoCPButton.Text = "AUTO CHECKPOINT: ON"
         AutoCPButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
         task.spawn(startAutoCPLoop)
     else
         AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
         AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    end
+end)
+
+AutoFlyButton.MouseButton1Click:Connect(function()
+    _G.AutoFlyEnabled = not _G.AutoFlyEnabled
+    if _G.AutoFlyEnabled then
+        disableAllModes("AutoFly")
+        AutoFlyButton.Text = "AUTO FLY: ON"
+        AutoFlyButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+        task.spawn(startAutoFlyLoop)
+    else
+        AutoFlyButton.Text = "AUTO FLY: OFF"
+        AutoFlyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
     end
 end)
 
