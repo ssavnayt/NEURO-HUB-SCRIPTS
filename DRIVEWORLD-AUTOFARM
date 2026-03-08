@@ -51,6 +51,7 @@ local noclipConnection = nil
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SmartRaceGuiPro"
 ScreenGui.Parent = CoreGui
+ScreenGui.DisplayOrder = 100
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.new(0, 220, 0, 480)
@@ -332,7 +333,7 @@ local function updateNoclip(state)
     else
         if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
         local char = Players.LocalPlayer.Character
-        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Name ~= "DoorMain" and part.Name ~= "Exhaust" and part.Name ~= "Main" and part.Name ~= "Stars" and part.Name ~= "Contrast" then part.CanCollide = true end end end
+        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and not part.Name ~= "DoorMain" and not part.Name ~= "Exhaust" and not part.Name ~= "Main" and not part.Name ~= "Stars" and not part.Name ~= "Contrast" then part.CanCollide = true end end end
         local car = getMyCar()
         if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end end
     end
@@ -471,9 +472,11 @@ AFKButton.MouseButton1Click:Connect(function()
 end)
 
 ShopResetButton.MouseButton1Click:Connect(function()
-    ShopResetButton.Text = "Resetting..."
+    ShopResetButton.Text = "Resetting... 0/2"
     game:GetService("ReplicatedStorage").Systems.Shop.ResetShopData:InvokeServer("Ping")
-    ShopResetButton.Text = "Reseted!"
+    ShopResetButton.Text = "Reseting... 1/2"
+    game:GetService("ReplicatedStorage").Systems.Shop.GetRobuxShopOffers:InvokeServer("Ping")
+    ShopResetButton.Text = "Reseted! 2/2"
     task.wait(1)
     ShopResetButton.Text = "SHOP RESET (TEST)"
 end)
