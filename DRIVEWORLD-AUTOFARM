@@ -18,11 +18,17 @@ _G.AutoFlyEnabled = false
 _G.NoclipEnabled = false
 _G.PlayerFrozen = false
 _G.SmartRaceTPd = false
+_G.SpeedBoostEnabled = false 
 
 -- Настройки
 local MIN_SPEED = 100
 local MAX_SPEED = 2500
 local FLY_SPEED = 300
+
+local MIN_BOOST = 100
+local MAX_BOOST = 2500
+local BOOST_SPEED = 500 -- Дефолтная скорость буста
+
 local DEFAULT_HEIGHT = 15
 local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
 local TARGET_GREEN = Color3.fromRGB(55, 400, 0)
@@ -200,6 +206,68 @@ local function createAction(parent, text, callback)
     return Button
 end
 
+-- Универсальная функция для создания слайдеров
+local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, callback)
+    local SliderFrame = Instance.new("Frame")
+    SliderFrame.Size = UDim2.new(1, 0, 0, 45)
+    SliderFrame.BackgroundColor3 = COLORS.ButtonNormal
+    SliderFrame.BorderSizePixel = 0
+    SliderFrame.Parent = parent
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, 0, 0, 25)
+    Label.BackgroundTransparency = 1
+    Label.Text = prefixText .. defaultVal
+    Label.TextColor3 = COLORS.Text
+    Label.Font = Enum.Font.Gotham
+    Label.TextSize = 13
+    Label.Parent = SliderFrame
+
+    local SliderBg = Instance.new("Frame")
+    SliderBg.Size = UDim2.new(0.8, 0, 0, 6)
+    SliderBg.Position = UDim2.new(0.1, 0, 0, 30)
+    SliderBg.BackgroundColor3 = COLORS.Background
+    SliderBg.BorderSizePixel = 0
+    SliderBg.Parent = SliderFrame
+
+    local SliderFill = Instance.new("Frame")
+    SliderFill.Size = UDim2.new((defaultVal - minVal) / (maxVal - minVal), 0, 1, 0)
+    SliderFill.BackgroundColor3 = COLORS.ButtonActive
+    SliderFill.BorderSizePixel = 0
+    SliderFill.Parent = SliderBg
+
+    local SliderBtn = Instance.new("TextButton")
+    SliderBtn.Size = UDim2.new(1, 0, 1, 10)
+    SliderBtn.Position = UDim2.new(0, 0, 0, -5)
+    SliderBtn.BackgroundTransparency = 1
+    SliderBtn.Text = ""
+    SliderBtn.Parent = SliderBg
+
+    local dragging = false
+    local function updateSlider(input)
+        local sliderX = SliderBg.AbsolutePosition.X
+        local sliderWidth = SliderBg.AbsoluteSize.X
+        local inputX = input.Position.X
+        local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
+        local newVal = math.floor(minVal + (maxVal - minVal) * percent)
+        
+        Label.Text = prefixText .. newVal
+        SliderFill.Size = UDim2.new(percent, 0, 1, 0)
+        callback(newVal)
+    end
+
+    SliderBtn.MouseButton1Down:Connect(function()
+        dragging = true
+        updateSlider({Position = Vector3.new(Players.LocalPlayer:GetMouse().X, 0, 0)})
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then updateSlider(input) end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+end
+
 -- === СОЗДАНИЕ КАТЕГОРИЙ И КНОПОК ===
 
 -- 1. RACE
@@ -234,67 +302,27 @@ buttons.AutoFly = createToggle(RaceCategory, "Auto Fly", false, function(state, 
     end
 end)
 
-local SliderFrame = Instance.new("Frame")
-SliderFrame.Size = UDim2.new(1, 0, 0, 45)
-SliderFrame.BackgroundColor3 = COLORS.ButtonNormal
-SliderFrame.BorderSizePixel = 0
-SliderFrame.Parent = RaceCategory
-
-local SpeedLabel = Instance.new("TextLabel")
-SpeedLabel.Size = UDim2.new(1, 0, 0, 25)
-SpeedLabel.BackgroundTransparency = 1
-SpeedLabel.Text = "Speed: " .. FLY_SPEED
-SpeedLabel.TextColor3 = COLORS.Text
-SpeedLabel.Font = Enum.Font.Gotham
-SpeedLabel.TextSize = 13
-SpeedLabel.Parent = SliderFrame
-
-local SliderBg = Instance.new("Frame")
-SliderBg.Size = UDim2.new(0.8, 0, 0, 6)
-SliderBg.Position = UDim2.new(0.1, 0, 0, 30)
-SliderBg.BackgroundColor3 = COLORS.Background
-SliderBg.BorderSizePixel = 0
-SliderBg.Parent = SliderFrame
-
-local SliderFill = Instance.new("Frame")
-SliderFill.Size = UDim2.new((FLY_SPEED - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0, 1, 0)
-SliderFill.BackgroundColor3 = COLORS.ButtonActive
-SliderFill.BorderSizePixel = 0
-SliderFill.Parent = SliderBg
-
-local SliderBtn = Instance.new("TextButton")
-SliderBtn.Size = UDim2.new(1, 0, 1, 10)
-SliderBtn.Position = UDim2.new(0, 0, 0, -5)
-SliderBtn.BackgroundTransparency = 1
-SliderBtn.Text = ""
-SliderBtn.Parent = SliderBg
-
-local draggingSlider = false
-local function updateSlider(input)
-    local sliderX = SliderBg.AbsolutePosition.X
-    local sliderWidth = SliderBg.AbsoluteSize.X
-    local inputX = input.Position.X
-    local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
-    local newSpeed = math.floor(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * percent)
-    FLY_SPEED = newSpeed
-    SpeedLabel.Text = "Speed: " .. newSpeed
-    SliderFill.Size = UDim2.new(percent, 0, 1, 0)
-end
-SliderBtn.MouseButton1Down:Connect(function()
-    draggingSlider = true
-    updateSlider({Position = Vector3.new(Players.LocalPlayer:GetMouse().X, 0, 0)})
+createSlider(RaceCategory, "Fly Speed: ", MIN_SPEED, MAX_SPEED, FLY_SPEED, function(val)
+    FLY_SPEED = val
 end)
-UserInputService.InputChanged:Connect(function(input)
-    if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then updateSlider(input) end
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSlider = false end
-end)
+
 
 -- 2. PLAYER
 local PlayerCategory = createCategory("Player", UDim2.new(0, 250, 0, 50))
+
 createToggle(PlayerCategory, "Noclip", false, function(state) _G.NoclipEnabled = state; updateNoclip(state) end)
 createToggle(PlayerCategory, "Freeze Player", false, function(state) _G.PlayerFrozen = state; setFreeze(state) end)
+
+-- Speed Boost Переключатель
+createToggle(PlayerCategory, "SpeedBoost (Hold W)", false, function(state)
+    _G.SpeedBoostEnabled = state
+end)
+
+-- Слайдер для скорости Буста
+createSlider(PlayerCategory, "Boost Speed: ", MIN_BOOST, MAX_BOOST, BOOST_SPEED, function(val)
+    BOOST_SPEED = val
+end)
+
 
 -- 3. SERVER
 local ServerCategory = createCategory("Server", UDim2.new(0, 450, 0, 50))
@@ -319,10 +347,10 @@ createAction(ServerCategory, "Server Exit Car", function(btn)
     btn.Text = "Server Exit Car"
 end)
 
--- 4. INFO (С переключателем игроков)
+
+-- 4. INFO 
 local InfoCategory = createCategory("Info", UDim2.new(0, 650, 0, 50))
 
--- Создаем панель переключателя
 local SwitcherFrame = Instance.new("Frame")
 SwitcherFrame.Size = UDim2.new(1, 0, 0, 30)
 SwitcherFrame.BackgroundColor3 = COLORS.Header
@@ -361,7 +389,6 @@ TargetNameLabel.TextSize = 12
 TargetNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 TargetNameLabel.Parent = SwitcherFrame
 
--- Поля информации
 local moneyLabel = createLabel(InfoCategory, "Money: N/A")
 local levelLabel = createLabel(InfoCategory, "Level: N/A")
 local airLabel = createLabel(InfoCategory, "Air Score: N/A")
@@ -370,26 +397,18 @@ local auctionLabel = createLabel(InfoCategory, "Auction Earned: N/A")
 local spentLabel = createLabel(InfoCategory, "Spent: N/A")
 local clubLabel = createLabel(InfoCategory, "Club: N/A")
 
--- Логика переключения
 local targetPlayer = Players.LocalPlayer
-
 local function changePlayer(step)
     local plrs = Players:GetPlayers()
     if #plrs == 0 then return end
-
     local currentIndex = 1
-    for i, p in ipairs(plrs) do
-        if p == targetPlayer then currentIndex = i break end
-    end
-
+    for i, p in ipairs(plrs) do if p == targetPlayer then currentIndex = i break end end
     currentIndex = currentIndex + step
     if currentIndex > #plrs then currentIndex = 1 end
     if currentIndex < 1 then currentIndex = #plrs end
-
     targetPlayer = plrs[currentIndex]
     TargetNameLabel.Text = targetPlayer.Name
     
-    -- Сбрасываем текст перед загрузкой новых
     moneyLabel.Text = "Money: Loading..."
     levelLabel.Text = "Level: Loading..."
     airLabel.Text = "Air Score: Loading..."
@@ -402,27 +421,19 @@ end
 PrevBtn.MouseButton1Click:Connect(function() changePlayer(-1) end)
 NextBtn.MouseButton1Click:Connect(function() changePlayer(1) end)
 
--- Цикл обновления информации
 task.spawn(function()
     local repStorage = game:GetService("ReplicatedStorage")
-
     while task.wait(1) do
         if not ScreenGui.Parent then break end
-
-        -- Если игрок вышел с сервера, переключаемся обратно на LocalPlayer
         if not targetPlayer or not targetPlayer.Parent then
             targetPlayer = Players.LocalPlayer
             TargetNameLabel.Text = targetPlayer.Name
         end
-
         local pName = targetPlayer.Name
-
-        -- Обновление Leaderstats
         local leaderstats = targetPlayer:FindFirstChild("leaderstats")
         if leaderstats then
             local cash = leaderstats:FindFirstChild("Cash")
             if cash then moneyLabel.Text = "Money: " .. tostring(cash.Value) else moneyLabel.Text = "Money: N/A" end
-
             local level = leaderstats:FindFirstChild("Level")
             if level then 
                 local lvlVal = tonumber(level.Value) or 0
@@ -430,11 +441,9 @@ task.spawn(function()
                 levelLabel.Text = "Level: " .. tostring(lvlVal) .. extraText
             else levelLabel.Text = "Level: N/A" end
         else
-            moneyLabel.Text = "Money: N/A"
-            levelLabel.Text = "Level: N/A"
+            moneyLabel.Text = "Money: N/A"; levelLabel.Text = "Level: N/A"
         end
 
-        -- Обновление ReplicatedStorage PlayerData
         local playerDataFolder = repStorage:FindFirstChild("PlayerData")
         if playerDataFolder then
             local myData = playerDataFolder:FindFirstChild(pName)
@@ -443,30 +452,19 @@ task.spawn(function()
                 if stats then
                     local air = stats:FindFirstChild("AirScore")
                     if air then airLabel.Text = "Air Score: " .. tostring(air.Value) else airLabel.Text = "Air Score: N/A" end
-
                     local drift = stats:FindFirstChild("DriftScore")
                     if drift then driftLabel.Text = "Drift Score: " .. tostring(drift.Value) else driftLabel.Text = "Drift Score: N/A" end
-
                     local auction = stats:FindFirstChild("AuctionEarnings")
                     if auction then auctionLabel.Text = "Auction Earned: " .. tostring(auction.Value) else auctionLabel.Text = "Auction Earned: N/A" end
-
                     local spent = stats:FindFirstChild("SpentCash")
                     if spent then spentLabel.Text = "Spent: " .. tostring(spent.Value) else spentLabel.Text = "Spent: N/A" end
                 else
-                    airLabel.Text = "Air Score: N/A"
-                    driftLabel.Text = "Drift Score: N/A"
-                    auctionLabel.Text = "Auction Earned: N/A"
-                    spentLabel.Text = "Spent: N/A"
+                    airLabel.Text = "Air Score: N/A"; driftLabel.Text = "Drift Score: N/A"; auctionLabel.Text = "Auction Earned: N/A"; spentLabel.Text = "Spent: N/A"
                 end
-
                 local club = myData:FindFirstChild("ClubTag")
                 if club then clubLabel.Text = "Club: " .. tostring(club.Value) else clubLabel.Text = "Club: N/A" end
             else
-                airLabel.Text = "Air Score: N/A"
-                driftLabel.Text = "Drift Score: N/A"
-                auctionLabel.Text = "Auction Earned: N/A"
-                spentLabel.Text = "Spent: N/A"
-                clubLabel.Text = "Club: N/A"
+                airLabel.Text = "Air Score: N/A"; driftLabel.Text = "Drift Score: N/A"; auctionLabel.Text = "Auction Earned: N/A"; spentLabel.Text = "Spent: N/A"; clubLabel.Text = "Club: N/A"
             end
         end
     end
@@ -479,6 +477,18 @@ function disableAllModes(exclude)
     if exclude ~= "SmartRace" then _G.SmartRaceEnabled = false; buttons.SmartRace.BackgroundColor3 = COLORS.ButtonNormal end
     if exclude ~= "AutoCheckpoint" then _G.AutoCheckpointEnabled = false; buttons.AutoCP.BackgroundColor3 = COLORS.ButtonNormal end
     if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
+end
+
+local function getMyCar()
+    if workspace:FindFirstChild("Cars") then
+        for _, car in pairs(workspace.Cars:GetChildren()) do
+            local d = car:FindFirstChild("CurrentDriver")
+            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
+                return car
+            end
+        end
+    end
+    return nil
 end
 
 local function isBlue(c)
@@ -513,18 +523,6 @@ local function findBestCheckpoint()
         end
     end
     return blueTarget or greenTarget
-end
-
-local function getMyCar()
-    if workspace:FindFirstChild("Cars") then
-        for _, car in pairs(workspace.Cars:GetChildren()) do
-            local d = car:FindFirstChild("CurrentDriver")
-            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
-                return car
-            end
-        end
-    end
-    return nil
 end
 
 local function flyTo(car, targetPart)
@@ -658,6 +656,28 @@ function setFreeze(state)
         if hrp then hrp.Anchored = state end
     end
 end
+
+-- === ЛОГИКА SPEED BOOST (Как в Auto Checkpoint) ===
+RunService.Heartbeat:Connect(function()
+    if _G.SpeedBoostEnabled and UserInputService:IsKeyDown(Enum.KeyCode.W) then
+        local car = getMyCar()
+        local root = nil
+        
+        if car then
+            root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+        else
+            local char = Players.LocalPlayer.Character
+            if char then 
+                root = char:FindFirstChild("HumanoidRootPart") 
+            end
+        end
+        
+        if root then
+            -- Физическое ускорение в сторону камеры/машины
+            root.AssemblyLinearVelocity = root.CFrame.LookVector * BOOST_SPEED
+        end
+    end
+end)
 
 Players.LocalPlayer.CharacterAdded:Connect(function(char)
     if _G.PlayerFrozen then
