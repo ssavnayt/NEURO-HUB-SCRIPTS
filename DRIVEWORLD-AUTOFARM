@@ -7,8 +7,8 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local GuiService = game:GetService("GuiService")
 
 -- Очистка старого GUI
-if CoreGui:FindFirstChild("SmartRaceGuiPro") then
-    CoreGui.SmartRaceGuiPro:Destroy()
+if CoreGui:FindFirstChild("SmartRaceClickGui") then
+    CoreGui.SmartRaceClickGui:Destroy()
 end
 
 -- Глобальные переключатели
@@ -22,7 +22,7 @@ _G.SmartRaceTPd = false
 -- Настройки
 local MIN_SPEED = 100
 local MAX_SPEED = 2500
-local FLY_SPEED = 300 -- Начальная скорость
+local FLY_SPEED = 300
 local DEFAULT_HEIGHT = 15
 local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
 local TARGET_GREEN = Color3.fromRGB(55, 400, 0)
@@ -47,228 +47,453 @@ gobuty = gobuty + inset.Y
 local currentCar = nil
 local noclipConnection = nil
 
+-- === НАСТРОЙКИ СТИЛЯ ===
+local COLORS = {
+    Header = Color3.fromRGB(30, 30, 30),
+    Background = Color3.fromRGB(20, 20, 20),
+    ButtonNormal = Color3.fromRGB(25, 25, 25),
+    ButtonHover = Color3.fromRGB(40, 40, 40),
+    ButtonActive = Color3.fromRGB(0, 170, 100), 
+    Text = Color3.fromRGB(220, 220, 220),
+    Outline = Color3.fromRGB(10, 10, 10)
+}
+
 -- --- GUI ИНТЕРФЕЙС ---
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SmartRaceGuiPro"
+ScreenGui.Name = "SmartRaceClickGui"
 ScreenGui.Parent = CoreGui
 ScreenGui.DisplayOrder = 100
+ScreenGui.ResetOnSpawn = false
 
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 480)
-MainFrame.Position = UDim2.new(0.5, -110, 0.05, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
+local function createCategory(name, position)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 180, 0, 35)
+    Frame.Position = position
+    Frame.BackgroundColor3 = COLORS.Header
+    Frame.BorderSizePixel = 0
+    Frame.Active = true
+    Frame.Draggable = true 
+    Frame.Parent = ScreenGui
 
-local CornerFrame = Instance.new("UICorner")
-CornerFrame.CornerRadius = UDim.new(0, 10)
-CornerFrame.Parent = MainFrame
+    local Outline = Instance.new("UIStroke")
+    Outline.Color = COLORS.Outline
+    Outline.Thickness = 2
+    Outline.Parent = Frame
 
-local Layout = Instance.new("UIListLayout")
-Layout.Parent = MainFrame
-Layout.SortOrder = Enum.SortOrder.LayoutOrder
-Layout.Padding = UDim.new(0, 10)
-Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-Layout.VerticalAlignment = Enum.VerticalAlignment.Center
+    local HeaderText = Instance.new("TextLabel")
+    HeaderText.Size = UDim2.new(1, -10, 1, 0)
+    HeaderText.Position = UDim2.new(0, 10, 0, 0)
+    HeaderText.BackgroundTransparency = 1
+    HeaderText.Text = name
+    HeaderText.TextColor3 = COLORS.Text
+    HeaderText.Font = Enum.Font.GothamBold
+    HeaderText.TextSize = 14
+    HeaderText.TextXAlignment = Enum.TextXAlignment.Left
+    HeaderText.Parent = Frame
 
--- 1. SMART RACE
-local SmartRaceButton = Instance.new("TextButton")
-SmartRaceButton.Size = UDim2.new(0, 200, 0, 40)
-SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-SmartRaceButton.Text = "SMART RACE: OFF"
-SmartRaceButton.TextColor3 = Color3.new(1, 1, 1)
-SmartRaceButton.Font = Enum.Font.SourceSansBold
-SmartRaceButton.TextSize = 16
-SmartRaceButton.Parent = MainFrame
-local CornerSR = Instance.new("UICorner")
-CornerSR.Parent = SmartRaceButton
+    local ContentFrame = Instance.new("Frame")
+    ContentFrame.Size = UDim2.new(1, 0, 0, 0)
+    ContentFrame.Position = UDim2.new(0, 0, 1, 0)
+    ContentFrame.BackgroundColor3 = COLORS.Background
+    ContentFrame.BorderSizePixel = 0
+    ContentFrame.ClipsDescendants = true
+    ContentFrame.AutomaticSize = Enum.AutomaticSize.Y
+    ContentFrame.Parent = Frame
 
--- 2. AUTO CHECKPOINT
-local AutoCPButton = Instance.new("TextButton")
-AutoCPButton.Size = UDim2.new(0, 200, 0, 40)
-AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
-AutoCPButton.TextColor3 = Color3.new(1, 1, 1)
-AutoCPButton.Font = Enum.Font.SourceSansBold
-AutoCPButton.TextSize = 16
-AutoCPButton.Parent = MainFrame
-local CornerCP = Instance.new("UICorner")
-CornerCP.Parent = AutoCPButton
+    local ContentOutline = Instance.new("UIStroke")
+    ContentOutline.Color = COLORS.Outline
+    ContentOutline.Thickness = 2
+    ContentOutline.Parent = ContentFrame
 
--- 3. AUTO FLY
-local AutoFlyButton = Instance.new("TextButton")
-AutoFlyButton.Size = UDim2.new(0, 200, 0, 40)
-AutoFlyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-AutoFlyButton.Text = "AUTO FLY: OFF"
-AutoFlyButton.TextColor3 = Color3.new(1, 1, 1)
-AutoFlyButton.Font = Enum.Font.SourceSansBold
-AutoFlyButton.TextSize = 16
-AutoFlyButton.Parent = MainFrame
-local CornerAF = Instance.new("UICorner")
-CornerAF.Parent = AutoFlyButton
+    local Layout = Instance.new("UIListLayout")
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = ContentFrame
 
--- 4. NOCLIP
-local NoclipButton = Instance.new("TextButton")
-NoclipButton.Size = UDim2.new(0, 200, 0, 40)
-NoclipButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-NoclipButton.Text = "NOCLIP: OFF"
-NoclipButton.TextColor3 = Color3.new(1, 1, 1)
-NoclipButton.Font = Enum.Font.SourceSansBold
-NoclipButton.TextSize = 16
-NoclipButton.Parent = MainFrame
-local CornerNC = Instance.new("UICorner")
-CornerNC.Parent = NoclipButton
+    local clickStartPos = nil
+    Frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton2 then
+            ContentFrame.Visible = not ContentFrame.Visible
+        elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+            clickStartPos = input.Position
+        end
+    end)
 
--- 5. FREEZE
-local FreezeButton = Instance.new("TextButton")
-FreezeButton.Size = UDim2.new(0, 200, 0, 40)
-FreezeButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-FreezeButton.Text = "FREEZE PLAYER: OFF"
-FreezeButton.TextColor3 = Color3.new(1, 1, 1)
-FreezeButton.Font = Enum.Font.SourceSansBold
-FreezeButton.TextSize = 16
-FreezeButton.Parent = MainFrame
-local CornerFZ = Instance.new("UICorner")
-CornerFZ.Parent = FreezeButton
+    Frame.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and clickStartPos then
+            local distance = (input.Position - clickStartPos).Magnitude
+            if distance < 5 then
+                ContentFrame.Visible = not ContentFrame.Visible
+            end
+            clickStartPos = nil
+        end
+    end)
 
---RESETBUTTON
+    return ContentFrame
+end
 
-local ShopResetButton = Instance.new("TextButton")
-ShopResetButton.Size = UDim2.new(0, 200, 0, 40)
-ShopResetButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-ShopResetButton.Text = "SHOP RESET (TEST)"
-ShopResetButton.TextColor3 = Color3.new(1, 1, 1)
-ShopResetButton.Font = Enum.Font.SourceSansBold
-ShopResetButton.TextSize = 16
-ShopResetButton.Parent = MainFrame
-local CornerSR = Instance.new("UICorner")
-CornerSR.Parent = ShopResetButton
+local function createLabel(parent, text)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1, 0, 0, 25)
+    Frame.BackgroundColor3 = COLORS.ButtonNormal
+    Frame.BorderSizePixel = 0
+    Frame.Parent = parent
 
---SERVER EXIT CAR
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -10, 1, 0)
+    Label.Position = UDim2.new(0, 5, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = COLORS.Text
+    Label.Font = Enum.Font.Gotham
+    Label.TextSize = 12
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
 
-local ExitCarButton = Instance.new("TextButton")
-ExitCarButton.Size = UDim2.new(0, 200, 0, 40)
-ExitCarButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-ExitCarButton.Text = "Server Exit Car"
-ExitCarButton.TextColor3 = Color3.new(1, 1, 1)
-ExitCarButton.Font = Enum.Font.SourceSansBold
-ExitCarButton.TextSize = 16
-ExitCarButton.Parent = MainFrame
-local CornerEB = Instance.new("UICorner")
-CornerEB.Parent = ExitCarButton
+    return Label
+end
 
---SERVER AFK
+local function createToggle(parent, text, defaultState, callback)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, 0, 0, 35)
+    Button.BackgroundColor3 = defaultState and COLORS.ButtonActive or COLORS.ButtonNormal
+    Button.BorderSizePixel = 0
+    Button.Text = text
+    Button.TextColor3 = COLORS.Text
+    Button.Font = Enum.Font.Gotham
+    Button.TextSize = 13
+    Button.AutoButtonColor = false
+    Button.Parent = parent
 
-local AFKButton = Instance.new("TextButton")
-AFKButton.Size = UDim2.new(0, 200, 0, 40)
-AFKButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-AFKButton.Text = "ServerSide AFK"
-AFKButton.TextColor3 = Color3.new(1, 1, 1)
-AFKButton.Font = Enum.Font.SourceSansBold
-AFKButton.TextSize = 16
-AFKButton.Parent = MainFrame
-local CornerAB = Instance.new("UICorner")
-CornerAB.Parent = AFKButton
+    local state = defaultState
+    Button.MouseEnter:Connect(function() if not state then Button.BackgroundColor3 = COLORS.ButtonHover end end)
+    Button.MouseLeave:Connect(function() Button.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal end)
+    Button.MouseButton1Click:Connect(function()
+        state = not state
+        Button.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonHover
+        callback(state, Button)
+    end)
+    return Button
+end
 
+local function createAction(parent, text, callback)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, 0, 0, 35)
+    Button.BackgroundColor3 = COLORS.ButtonNormal
+    Button.BorderSizePixel = 0
+    Button.Text = text
+    Button.TextColor3 = COLORS.Text
+    Button.Font = Enum.Font.Gotham
+    Button.TextSize = 13
+    Button.AutoButtonColor = false
+    Button.Parent = parent
 
--- 6. SLIDER
-local SliderContainer = Instance.new("Frame")
-SliderContainer.Size = UDim2.new(0, 200, 0, 50)
-SliderContainer.BackgroundTransparency = 1
-SliderContainer.Parent = MainFrame
+    Button.MouseEnter:Connect(function() Button.BackgroundColor3 = COLORS.ButtonHover end)
+    Button.MouseLeave:Connect(function() Button.BackgroundColor3 = COLORS.ButtonNormal end)
+    Button.MouseButton1Click:Connect(function()
+        Button.BackgroundColor3 = COLORS.ButtonActive
+        task.spawn(function()
+            callback(Button)
+            task.wait(0.2)
+            Button.BackgroundColor3 = COLORS.ButtonHover
+        end)
+    end)
+    return Button
+end
+
+-- === СОЗДАНИЕ КАТЕГОРИЙ И КНОПОК ===
+
+-- 1. RACE
+local RaceCategory = createCategory("Race", UDim2.new(0, 50, 0, 50))
+local buttons = {} 
+
+buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, function(state, btn)
+    _G.SmartRaceEnabled = state
+    if state then
+        disableAllModes("SmartRace")
+        task.spawn(startSmartRaceLoop)
+    else
+        updateNoclip(false)
+        local char = Players.LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then char.HumanoidRootPart.Anchored = false end
+    end
+end)
+
+buttons.AutoCP = createToggle(RaceCategory, "Auto Checkpoint", false, function(state, btn)
+    _G.AutoCheckpointEnabled = state
+    if state then
+        disableAllModes("AutoCheckpoint")
+        task.spawn(startAutoCPLoop)
+    end
+end)
+
+buttons.AutoFly = createToggle(RaceCategory, "Auto Fly", false, function(state, btn)
+    _G.AutoFlyEnabled = state
+    if state then
+        disableAllModes("AutoFly")
+        task.spawn(startAutoFlyLoop)
+    end
+end)
+
+local SliderFrame = Instance.new("Frame")
+SliderFrame.Size = UDim2.new(1, 0, 0, 45)
+SliderFrame.BackgroundColor3 = COLORS.ButtonNormal
+SliderFrame.BorderSizePixel = 0
+SliderFrame.Parent = RaceCategory
 
 local SpeedLabel = Instance.new("TextLabel")
-SpeedLabel.Size = UDim2.new(1, 0, 0, 20)
+SpeedLabel.Size = UDim2.new(1, 0, 0, 25)
 SpeedLabel.BackgroundTransparency = 1
-SpeedLabel.Text = "SPEED/POWER: " .. FLY_SPEED
-SpeedLabel.TextColor3 = Color3.new(1, 1, 1)
-SpeedLabel.Font = Enum.Font.SourceSansBold
-SpeedLabel.TextSize = 14
-SpeedLabel.Parent = SliderContainer
+SpeedLabel.Text = "Speed: " .. FLY_SPEED
+SpeedLabel.TextColor3 = COLORS.Text
+SpeedLabel.Font = Enum.Font.Gotham
+SpeedLabel.TextSize = 13
+SpeedLabel.Parent = SliderFrame
 
-local SliderBar = Instance.new("Frame")
-SliderBar.Size = UDim2.new(1, 0, 0, 10)
-SliderBar.Position = UDim2.new(0, 0, 0.5, 0)
-SliderBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-SliderBar.BorderSizePixel = 0
-SliderBar.Parent = SliderContainer
-local CornerBar = Instance.new("UICorner")
-CornerBar.CornerRadius = UDim.new(1, 0)
-CornerBar.Parent = SliderBar
+local SliderBg = Instance.new("Frame")
+SliderBg.Size = UDim2.new(0.8, 0, 0, 6)
+SliderBg.Position = UDim2.new(0.1, 0, 0, 30)
+SliderBg.BackgroundColor3 = COLORS.Background
+SliderBg.BorderSizePixel = 0
+SliderBg.Parent = SliderFrame
 
 local SliderFill = Instance.new("Frame")
-SliderFill.Size = UDim2.new(0, 0, 1, 0)
-SliderFill.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+SliderFill.Size = UDim2.new((FLY_SPEED - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0, 1, 0)
+SliderFill.BackgroundColor3 = COLORS.ButtonActive
 SliderFill.BorderSizePixel = 0
-SliderFill.Parent = SliderBar
-local CornerFill = Instance.new("UICorner")
-CornerFill.CornerRadius = UDim.new(1, 0)
-CornerFill.Parent = SliderFill
+SliderFill.Parent = SliderBg
 
-local SliderButton = Instance.new("TextButton")
-SliderButton.Size = UDim2.new(1, 0, 1, 0)
-SliderButton.BackgroundTransparency = 1
-SliderButton.Text = ""
-SliderButton.Parent = SliderBar
+local SliderBtn = Instance.new("TextButton")
+SliderBtn.Size = UDim2.new(1, 0, 1, 10)
+SliderBtn.Position = UDim2.new(0, 0, 0, -5)
+SliderBtn.BackgroundTransparency = 1
+SliderBtn.Text = ""
+SliderBtn.Parent = SliderBg
 
--- --- ЛОГИКА СЛАЙДЕРА ---
+local draggingSlider = false
 local function updateSlider(input)
-    local sliderX = SliderBar.AbsolutePosition.X
-    local sliderWidth = SliderBar.AbsoluteSize.X
+    local sliderX = SliderBg.AbsolutePosition.X
+    local sliderWidth = SliderBg.AbsoluteSize.X
     local inputX = input.Position.X
     local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
     local newSpeed = math.floor(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * percent)
-    
     FLY_SPEED = newSpeed
-    SpeedLabel.Text = "SPEED/POWER: " .. newSpeed
+    SpeedLabel.Text = "Speed: " .. newSpeed
     SliderFill.Size = UDim2.new(percent, 0, 1, 0)
 end
-
-local startPercent = (FLY_SPEED - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)
-SliderFill.Size = UDim2.new(startPercent, 0, 1, 0)
-local draggingSlider = false
-
-SliderButton.MouseButton1Down:Connect(function()
+SliderBtn.MouseButton1Down:Connect(function()
     draggingSlider = true
-    local mouse = Players.LocalPlayer:GetMouse()
-    local input = {Position = Vector3.new(mouse.X, mouse.Y, 0)}
-    updateSlider(input)
+    updateSlider({Position = Vector3.new(Players.LocalPlayer:GetMouse().X, 0, 0)})
 end)
-
 UserInputService.InputChanged:Connect(function(input)
-    if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
-        updateSlider(input)
-    end
+    if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then updateSlider(input) end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        draggingSlider = false
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSlider = false end
+end)
+
+-- 2. PLAYER
+local PlayerCategory = createCategory("Player", UDim2.new(0, 250, 0, 50))
+createToggle(PlayerCategory, "Noclip", false, function(state) _G.NoclipEnabled = state; updateNoclip(state) end)
+createToggle(PlayerCategory, "Freeze Player", false, function(state) _G.PlayerFrozen = state; setFreeze(state) end)
+
+-- 3. SERVER
+local ServerCategory = createCategory("Server", UDim2.new(0, 450, 0, 50))
+createAction(ServerCategory, "ServerSide AFK", function(btn)
+    btn.Text = "Setting AFK..."
+    game:GetService("ReplicatedStorage").Systems.Social.PlayerToggledAFK:FireServer("Ping")
+    task.wait(0.5)
+    btn.Text = "ServerSide AFK"
+end)
+createAction(ServerCategory, "Shop Reset (Test)", function(btn)
+    btn.Text = "Resetting... 0/2"
+    game:GetService("ReplicatedStorage").Systems.Shop.ResetShopData:InvokeServer("Ping")
+    btn.Text = "Reseting... 1/2"
+    game:GetService("ReplicatedStorage").Systems.Shop.GetRobuxShopOffers:InvokeServer("Ping")
+    task.wait(0.5)
+    btn.Text = "Shop Reset (Test)"
+end)
+createAction(ServerCategory, "Server Exit Car", function(btn)
+    btn.Text = "Exiting car..."
+    game:GetService("ReplicatedStorage").Systems.Cars.ExitCar:InvokeServer("Ping")
+    task.wait(0.5)
+    btn.Text = "Server Exit Car"
+end)
+
+-- 4. INFO (С переключателем игроков)
+local InfoCategory = createCategory("Info", UDim2.new(0, 650, 0, 50))
+
+-- Создаем панель переключателя
+local SwitcherFrame = Instance.new("Frame")
+SwitcherFrame.Size = UDim2.new(1, 0, 0, 30)
+SwitcherFrame.BackgroundColor3 = COLORS.Header
+SwitcherFrame.BorderSizePixel = 0
+SwitcherFrame.Parent = InfoCategory
+
+local PrevBtn = Instance.new("TextButton")
+PrevBtn.Size = UDim2.new(0, 30, 1, 0)
+PrevBtn.BackgroundColor3 = COLORS.Header
+PrevBtn.BorderSizePixel = 0
+PrevBtn.Text = "<"
+PrevBtn.TextColor3 = COLORS.ButtonActive
+PrevBtn.Font = Enum.Font.GothamBold
+PrevBtn.TextSize = 16
+PrevBtn.Parent = SwitcherFrame
+
+local NextBtn = Instance.new("TextButton")
+NextBtn.Size = UDim2.new(0, 30, 1, 0)
+NextBtn.Position = UDim2.new(1, -30, 0, 0)
+NextBtn.BackgroundColor3 = COLORS.Header
+NextBtn.BorderSizePixel = 0
+NextBtn.Text = ">"
+NextBtn.TextColor3 = COLORS.ButtonActive
+NextBtn.Font = Enum.Font.GothamBold
+NextBtn.TextSize = 16
+NextBtn.Parent = SwitcherFrame
+
+local TargetNameLabel = Instance.new("TextLabel")
+TargetNameLabel.Size = UDim2.new(1, -60, 1, 0)
+TargetNameLabel.Position = UDim2.new(0, 30, 0, 0)
+TargetNameLabel.BackgroundTransparency = 1
+TargetNameLabel.Text = Players.LocalPlayer.Name
+TargetNameLabel.TextColor3 = COLORS.Text
+TargetNameLabel.Font = Enum.Font.GothamBold
+TargetNameLabel.TextSize = 12
+TargetNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+TargetNameLabel.Parent = SwitcherFrame
+
+-- Поля информации
+local moneyLabel = createLabel(InfoCategory, "Money: N/A")
+local levelLabel = createLabel(InfoCategory, "Level: N/A")
+local airLabel = createLabel(InfoCategory, "Air Score: N/A")
+local driftLabel = createLabel(InfoCategory, "Drift Score: N/A")
+local auctionLabel = createLabel(InfoCategory, "Auction Earned: N/A")
+local spentLabel = createLabel(InfoCategory, "Spent: N/A")
+local clubLabel = createLabel(InfoCategory, "Club: N/A")
+
+-- Логика переключения
+local targetPlayer = Players.LocalPlayer
+
+local function changePlayer(step)
+    local plrs = Players:GetPlayers()
+    if #plrs == 0 then return end
+
+    local currentIndex = 1
+    for i, p in ipairs(plrs) do
+        if p == targetPlayer then currentIndex = i break end
+    end
+
+    currentIndex = currentIndex + step
+    if currentIndex > #plrs then currentIndex = 1 end
+    if currentIndex < 1 then currentIndex = #plrs end
+
+    targetPlayer = plrs[currentIndex]
+    TargetNameLabel.Text = targetPlayer.Name
+    
+    -- Сбрасываем текст перед загрузкой новых
+    moneyLabel.Text = "Money: Loading..."
+    levelLabel.Text = "Level: Loading..."
+    airLabel.Text = "Air Score: Loading..."
+    driftLabel.Text = "Drift Score: Loading..."
+    auctionLabel.Text = "Auction Earned: Loading..."
+    spentLabel.Text = "Spent: Loading..."
+    clubLabel.Text = "Club: Loading..."
+end
+
+PrevBtn.MouseButton1Click:Connect(function() changePlayer(-1) end)
+NextBtn.MouseButton1Click:Connect(function() changePlayer(1) end)
+
+-- Цикл обновления информации
+task.spawn(function()
+    local repStorage = game:GetService("ReplicatedStorage")
+
+    while task.wait(1) do
+        if not ScreenGui.Parent then break end
+
+        -- Если игрок вышел с сервера, переключаемся обратно на LocalPlayer
+        if not targetPlayer or not targetPlayer.Parent then
+            targetPlayer = Players.LocalPlayer
+            TargetNameLabel.Text = targetPlayer.Name
+        end
+
+        local pName = targetPlayer.Name
+
+        -- Обновление Leaderstats
+        local leaderstats = targetPlayer:FindFirstChild("leaderstats")
+        if leaderstats then
+            local cash = leaderstats:FindFirstChild("Cash")
+            if cash then moneyLabel.Text = "Money: " .. tostring(cash.Value) else moneyLabel.Text = "Money: N/A" end
+
+            local level = leaderstats:FindFirstChild("Level")
+            if level then 
+                local lvlVal = tonumber(level.Value) or 0
+                local extraText = lvlVal > 10 and " (> 10)" or " (<= 10)"
+                levelLabel.Text = "Level: " .. tostring(lvlVal) .. extraText
+            else levelLabel.Text = "Level: N/A" end
+        else
+            moneyLabel.Text = "Money: N/A"
+            levelLabel.Text = "Level: N/A"
+        end
+
+        -- Обновление ReplicatedStorage PlayerData
+        local playerDataFolder = repStorage:FindFirstChild("PlayerData")
+        if playerDataFolder then
+            local myData = playerDataFolder:FindFirstChild(pName)
+            if myData then
+                local stats = myData:FindFirstChild("Stats")
+                if stats then
+                    local air = stats:FindFirstChild("AirScore")
+                    if air then airLabel.Text = "Air Score: " .. tostring(air.Value) else airLabel.Text = "Air Score: N/A" end
+
+                    local drift = stats:FindFirstChild("DriftScore")
+                    if drift then driftLabel.Text = "Drift Score: " .. tostring(drift.Value) else driftLabel.Text = "Drift Score: N/A" end
+
+                    local auction = stats:FindFirstChild("AuctionEarnings")
+                    if auction then auctionLabel.Text = "Auction Earned: " .. tostring(auction.Value) else auctionLabel.Text = "Auction Earned: N/A" end
+
+                    local spent = stats:FindFirstChild("SpentCash")
+                    if spent then spentLabel.Text = "Spent: " .. tostring(spent.Value) else spentLabel.Text = "Spent: N/A" end
+                else
+                    airLabel.Text = "Air Score: N/A"
+                    driftLabel.Text = "Drift Score: N/A"
+                    auctionLabel.Text = "Auction Earned: N/A"
+                    spentLabel.Text = "Spent: N/A"
+                end
+
+                local club = myData:FindFirstChild("ClubTag")
+                if club then clubLabel.Text = "Club: " .. tostring(club.Value) else clubLabel.Text = "Club: N/A" end
+            else
+                airLabel.Text = "Air Score: N/A"
+                driftLabel.Text = "Drift Score: N/A"
+                auctionLabel.Text = "Auction Earned: N/A"
+                spentLabel.Text = "Spent: N/A"
+                clubLabel.Text = "Club: N/A"
+            end
+        end
     end
 end)
 
 
--- --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+-- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ЛОГИКА ===
+
+function disableAllModes(exclude)
+    if exclude ~= "SmartRace" then _G.SmartRaceEnabled = false; buttons.SmartRace.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "AutoCheckpoint" then _G.AutoCheckpointEnabled = false; buttons.AutoCP.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
+end
 
 local function isBlue(c)
     if not c then return false end
-    return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and 
-           math.abs(c.G*255 - TARGET_BLUE.G*255) <= TOLERANCE and 
-           math.abs(c.B*255 - TARGET_BLUE.B*255) <= TOLERANCE
+    return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and math.abs(c.G*255 - TARGET_BLUE.G*255) <= TOLERANCE and math.abs(c.B*255 - TARGET_BLUE.B*255) <= TOLERANCE
 end
 
 local function isGreen(c)
     if not c then return false end
     if c.G * 255 > 200 and c.R * 255 < 100 then return true end
-    return math.abs(c.R*255 - TARGET_GREEN.R*255) <= TOLERANCE and 
-           math.abs(c.G*255 - TARGET_GREEN.G*255) <= TOLERANCE and 
-           math.abs(c.B*255 - TARGET_GREEN.B*255) <= TOLERANCE
+    return math.abs(c.R*255 - TARGET_GREEN.R*255) <= TOLERANCE and math.abs(c.G*255 - TARGET_GREEN.G*255) <= TOLERANCE and math.abs(c.B*255 - TARGET_GREEN.B*255) <= TOLERANCE
 end
 
 local function findBestCheckpoint()
-    local blueTarget = nil
-    local greenTarget = nil
+    local blueTarget, greenTarget = nil, nil
     if workspace:FindFirstChild("Races") then
         for _, race in pairs(workspace.Races:GetChildren()) do
             local cpFolder = race:FindFirstChild("Checkpoints")
@@ -276,13 +501,9 @@ local function findBestCheckpoint()
                 for _, cp in pairs(cpFolder:GetChildren()) do
                     local inner = cp:FindFirstChild("Inner")
                     if inner then
-                        local b = inner:FindFirstChild("Base")
-                        local e = inner:FindFirstChild("Expand")
-                        local function getCol(o)
-                            return (o:IsA("Part") or o:IsA("MeshPart")) and o.Color or o.Color3
-                        end
-                        local colorB = b and getCol(b)
-                        local colorE = e and getCol(e)
+                        local b, e = inner:FindFirstChild("Base"), inner:FindFirstChild("Expand")
+                        local function getCol(o) return (o:IsA("Part") or o:IsA("MeshPart")) and o.Color or o.Color3 end
+                        local colorB, colorE = b and getCol(b), e and getCol(e)
                         if isBlue(colorB) or isBlue(colorE) then blueTarget = inner break end
                         if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then greenTarget = inner end
                     end
@@ -319,8 +540,7 @@ local function flyTo(car, targetPart)
     end
 end
 
--- --- NOCLIP MANAGER ---
-local function updateNoclip(state)
+function updateNoclip(state)
     if state then
         if not noclipConnection then
             noclipConnection = RunService.Stepped:Connect(function()
@@ -333,14 +553,13 @@ local function updateNoclip(state)
     else
         if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
         local char = Players.LocalPlayer.Character
-        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and not part.Name ~= "DoorMain" and not part.Name ~= "Exhaust" and not part.Name ~= "Main" and not part.Name ~= "Stars" and not part.Name ~= "Contrast" then part.CanCollide = true end end end
+        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Name ~= "DoorMain" and part.Name ~= "Exhaust" and part.Name ~= "Main" and part.Name ~= "Stars" and part.Name ~= "Contrast" then part.CanCollide = true end end end
         local car = getMyCar()
         if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end end
     end
 end
 
--- --- ЛОГИКА 1: SMART RACE ---
-local function startSmartRaceLoop()
+function startSmartRaceLoop()
     while _G.SmartRaceEnabled do
         local target = findBestCheckpoint()
         local char = Players.LocalPlayer.Character
@@ -387,8 +606,7 @@ local function startSmartRaceLoop()
     updateNoclip(false)
 end
 
--- --- ЛОГИКА 2: AUTO CHECKPOINT ---
-local function startAutoCPLoop()
+function startAutoCPLoop()
     while _G.AutoCheckpointEnabled do
         local target = findBestCheckpoint()
         local car = getMyCar()
@@ -398,9 +616,7 @@ local function startAutoCPLoop()
     end
 end
 
--- --- ЛОГИКА 3: AUTO FLY (Разгон -> Стоп -> Повтор) ---
-local function startAutoFlyLoop()
-    -- 1. ЗАПОМИНАЕМ ТОЧКУ ЗЕМЛИ ПРИ ВКЛЮЧЕНИИ
+function startAutoFlyLoop()
     local char = Players.LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local startCF = hrp and hrp.CFrame or WAITING_CFRAME
@@ -410,30 +626,23 @@ local function startAutoFlyLoop()
         hrp = char and char:FindFirstChild("HumanoidRootPart")
 
         if hrp then
-            -- 2. ТЕЛЕПОРТ НА ЗЕМЛЮ И СБРОС СКОРОСТИ
             hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             hrp.CFrame = startCF
-            task.wait(0.2) -- Маленькая пауза перед запуском
+            task.wait(0.2) 
 
-            -- 3. РАЗГОН ВВЕРХ (ЗАПУСК)
             if _G.AutoFlyEnabled then
                 hrp.AssemblyLinearVelocity = Vector3.new(0, FLY_SPEED, 0)
-                
-                -- Ждем пока пролетит немного (1.5 сек)
                 task.wait(1.5)
             end
             
-            -- 4. ОСТАНОВКА (Сброс скорости в 0)
             if _G.AutoFlyEnabled and hrp then
                 hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                task.wait(0.5) -- Висим полсекунды
+                task.wait(0.5) 
             end
         end
-        -- 5. ЦИКЛ ПОВТОРЯЕТСЯ (Снова п.2: Телепорт на землю...)
         task.wait()
     end
 
-    -- 6. ЕСЛИ ВЫКЛЮЧИЛИ: Возврат на землю
     char = Players.LocalPlayer.Character
     hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
@@ -442,108 +651,7 @@ local function startAutoFlyLoop()
     end
 end
 
--- --- ОТКЛЮЧЕНИЕ РЕЖИМОВ ---
-local function disableAllModes(exclude)
-    if exclude ~= "SmartRace" then
-        _G.SmartRaceEnabled = false
-        SmartRaceButton.Text = "SMART RACE: OFF"
-        SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-    if exclude ~= "AutoCheckpoint" then
-        _G.AutoCheckpointEnabled = false
-        AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
-        AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-    if exclude ~= "AutoFly" then
-        _G.AutoFlyEnabled = false
-        AutoFlyButton.Text = "AUTO FLY: OFF"
-        AutoFlyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-end
-
--- --- ОБРАБОТКА КНОПОК ---
-
-AFKButton.MouseButton1Click:Connect(function()
-    AFKButton.Text = "Setting AFK..."
-    game:GetService("ReplicatedStorage").Systems.Social.PlayerToggledAFK:FireServer("Ping")
-    AFKButton.Text = "AFK Setted Up!"
-    task.wait(1)
-    AFKButton.Text = "ServerSide AFK"
-end)
-
-ShopResetButton.MouseButton1Click:Connect(function()
-    ShopResetButton.Text = "Resetting... 0/2"
-    game:GetService("ReplicatedStorage").Systems.Shop.ResetShopData:InvokeServer("Ping")
-    ShopResetButton.Text = "Reseting... 1/2"
-    game:GetService("ReplicatedStorage").Systems.Shop.GetRobuxShopOffers:InvokeServer("Ping")
-    ShopResetButton.Text = "Reseted! 2/2"
-    task.wait(1)
-    ShopResetButton.Text = "SHOP RESET (TEST)"
-end)
-
-ExitCarButton.MouseButton1Click:Connect(function()
-    ExitCarButton.Text = "Exiting car..."
-    game:GetService("ReplicatedStorage").Systems.Cars.ExitCar:InvokeServer("Ping")
-    ExitCarButton.Text = "Exited car!"
-    task.wait(1)
-    ExitCarButton.Text = "Server Exit Car"
-end)
-
-SmartRaceButton.MouseButton1Click:Connect(function()
-    _G.SmartRaceEnabled = not _G.SmartRaceEnabled
-    if _G.SmartRaceEnabled then
-        disableAllModes("SmartRace")
-        SmartRaceButton.Text = "SMART RACE: ON"
-        SmartRaceButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-        task.spawn(startSmartRaceLoop)
-    else
-        SmartRaceButton.Text = "SMART RACE: OFF"
-        SmartRaceButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-        updateNoclip(false)
-        local char = Players.LocalPlayer.Character
-        if char and char:FindFirstChild("HumanoidRootPart") then char.HumanoidRootPart.Anchored = false end
-    end
-end)
-
-AutoCPButton.MouseButton1Click:Connect(function()
-    _G.AutoCheckpointEnabled = not _G.AutoCheckpointEnabled
-    if _G.AutoCheckpointEnabled then
-        disableAllModes("AutoCheckpoint")
-        AutoCPButton.Text = "AUTO CHECKPOINT: ON"
-        AutoCPButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-        task.spawn(startAutoCPLoop)
-    else
-        AutoCPButton.Text = "AUTO CHECKPOINT: OFF"
-        AutoCPButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-end)
-
-AutoFlyButton.MouseButton1Click:Connect(function()
-    _G.AutoFlyEnabled = not _G.AutoFlyEnabled
-    if _G.AutoFlyEnabled then
-        disableAllModes("AutoFly")
-        AutoFlyButton.Text = "AUTO FLY: ON"
-        AutoFlyButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-        task.spawn(startAutoFlyLoop)
-    else
-        AutoFlyButton.Text = "AUTO FLY: OFF"
-        AutoFlyButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-end)
-
-NoclipButton.MouseButton1Click:Connect(function()
-    _G.NoclipEnabled = not _G.NoclipEnabled
-    updateNoclip(_G.NoclipEnabled)
-    if _G.NoclipEnabled then
-        NoclipButton.Text = "NOCLIP: ON"
-        NoclipButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-    else
-        NoclipButton.Text = "NOCLIP: OFF"
-        NoclipButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-end)
-
-local function setFreeze(state)
+function setFreeze(state)
     local char = Players.LocalPlayer.Character
     if char then
         local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -551,21 +659,17 @@ local function setFreeze(state)
     end
 end
 
-FreezeButton.MouseButton1Click:Connect(function()
-    _G.PlayerFrozen = not _G.PlayerFrozen
-    setFreeze(_G.PlayerFrozen)
-    if _G.PlayerFrozen then
-        FreezeButton.Text = "FREEZE PLAYER: ON"
-        FreezeButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
-    else
-        FreezeButton.Text = "FREEZE PLAYER: OFF"
-        FreezeButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-end)
-
 Players.LocalPlayer.CharacterAdded:Connect(function(char)
     if _G.PlayerFrozen then
         local hrp = char:WaitForChild("HumanoidRootPart", 5)
         if hrp then hrp.Anchored = true end
+    end
+end)
+
+-- === ГЛОБАЛЬНЫЕ КНОПКИ УПРАВЛЕНИЯ ===
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end 
+    if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+        ScreenGui.Enabled = not ScreenGui.Enabled
     end
 end)
