@@ -6,7 +6,7 @@ local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local GuiService = game:GetService("GuiService")
 
--- Очистка старого GUI
+-- Очистка старого GUI перед запуском
 if CoreGui:FindFirstChild("SmartRaceClickGui") then
     CoreGui.SmartRaceClickGui:Destroy()
 end
@@ -20,14 +20,22 @@ _G.PlayerFrozen = false
 _G.SmartRaceTPd = false
 _G.SpeedBoostEnabled = false 
 
+-- Таблица для хранения подключений событий (чтобы их можно было отключить)
+local connections = {}
+
 -- Настройки
 local MIN_SPEED = 100
 local MAX_SPEED = 2500
 local FLY_SPEED = 300
 
-local MIN_BOOST = 100
-local MAX_BOOST = 2500
-local BOOST_SPEED = 500 -- Дефолтная скорость буста
+-- Настройки умножения скорости
+local MIN_MULT = 1.001
+local MAX_MULT = 1.01
+local SPEED_MULTIPLIER = 1.05 -- На сколько умножать скорость каждый кадр
+
+local MIN_MAX_SPEED = 100
+local MAX_MAX_SPEED = 5000
+local MAX_BOOST_SPEED = 1000 -- Ограничитель скорости, чтобы машина не улетела в космос
 
 local DEFAULT_HEIGHT = 15
 local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
@@ -42,15 +50,14 @@ local WAITING_CFRAME = CFrame.new(
     -0, 0, -1.00000024
 )
 
-local gobutton = game:GetService("Players").LocalPlayer.PlayerGui.LiveQueue.Center.Teleport
-local gobutpos = gobutton.AbsolutePosition
-local gobutsize = gobutton.AbsoluteSize
+local gobutton = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("LiveQueue") and game:GetService("Players").LocalPlayer.PlayerGui.LiveQueue.Center.Teleport or nil
+local gobutpos = gobutton and gobutton.AbsolutePosition or Vector2.new(0,0)
+local gobutsize = gobutton and gobutton.AbsoluteSize or Vector2.new(0,0)
 local gobuty = gobutpos.Y + gobutsize.Y / 2
 local gobutx = gobutpos.X + gobutsize.X / 2
 local inset = GuiService:GetGuiInset()
 gobuty = gobuty + inset.Y
 
-local currentCar = nil
 local noclipConnection = nil
 
 -- === НАСТРОЙКИ СТИЛЯ ===
@@ -60,6 +67,7 @@ local COLORS = {
     ButtonNormal = Color3.fromRGB(25, 25, 25),
     ButtonHover = Color3.fromRGB(40, 40, 40),
     ButtonActive = Color3.fromRGB(0, 170, 100), 
+    ButtonDanger = Color3.fromRGB(170, 40, 40),
     Text = Color3.fromRGB(220, 220, 220),
     Outline = Color3.fromRGB(10, 10, 10)
 }
@@ -116,15 +124,16 @@ local function createCategory(name, position)
     Layout.Parent = ContentFrame
 
     local clickStartPos = nil
-    Frame.InputBegan:Connect(function(input)
+    local btnConn1 = Frame.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton2 then
             ContentFrame.Visible = not ContentFrame.Visible
         elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
             clickStartPos = input.Position
         end
     end)
+    table.insert(connections, btnConn1)
 
-    Frame.InputEnded:Connect(function(input)
+    local btnConn2 = Frame.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 and clickStartPos then
             local distance = (input.Position - clickStartPos).Magnitude
             if distance < 5 then
@@ -133,6 +142,7 @@ local function createCategory(name, position)
             clickStartPos = nil
         end
     end)
+    table.insert(connections, btnConn2)
 
     return ContentFrame
 end
@@ -181,10 +191,10 @@ local function createToggle(parent, text, defaultState, callback)
     return Button
 end
 
-local function createAction(parent, text, callback)
+local function createAction(parent, text, callback, isDanger)
     local Button = Instance.new("TextButton")
     Button.Size = UDim2.new(1, 0, 0, 35)
-    Button.BackgroundColor3 = COLORS.ButtonNormal
+    Button.BackgroundColor3 = isDanger and COLORS.ButtonDanger or COLORS.ButtonNormal
     Button.BorderSizePixel = 0
     Button.Text = text
     Button.TextColor3 = COLORS.Text
@@ -193,21 +203,25 @@ local function createAction(parent, text, callback)
     Button.AutoButtonColor = false
     Button.Parent = parent
 
-    Button.MouseEnter:Connect(function() Button.BackgroundColor3 = COLORS.ButtonHover end)
-    Button.MouseLeave:Connect(function() Button.BackgroundColor3 = COLORS.ButtonNormal end)
+    Button.MouseEnter:Connect(function() 
+        if not isDanger then Button.BackgroundColor3 = COLORS.ButtonHover end
+    end)
+    Button.MouseLeave:Connect(function() 
+        Button.BackgroundColor3 = isDanger and COLORS.ButtonDanger or COLORS.ButtonNormal 
+    end)
     Button.MouseButton1Click:Connect(function()
-        Button.BackgroundColor3 = COLORS.ButtonActive
+        if not isDanger then Button.BackgroundColor3 = COLORS.ButtonActive end
         task.spawn(function()
             callback(Button)
             task.wait(0.2)
-            Button.BackgroundColor3 = COLORS.ButtonHover
+            if not isDanger then Button.BackgroundColor3 = COLORS.ButtonHover end
         end)
     end)
     return Button
 end
 
--- Универсальная функция для создания слайдеров
-local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, callback)
+local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, decimals, callback)
+    decimals = decimals or 0
     local SliderFrame = Instance.new("Frame")
     SliderFrame.Size = UDim2.new(1, 0, 0, 45)
     SliderFrame.BackgroundColor3 = COLORS.ButtonNormal
@@ -249,9 +263,16 @@ local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, call
         local sliderWidth = SliderBg.AbsoluteSize.X
         local inputX = input.Position.X
         local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
-        local newVal = math.floor(minVal + (maxVal - minVal) * percent)
         
-        Label.Text = prefixText .. newVal
+        local newVal = minVal + (maxVal - minVal) * percent
+        if decimals == 0 then
+            newVal = math.floor(newVal)
+        else
+            local mult = 10^decimals
+            newVal = math.floor(newVal * mult + 0.5) / mult
+        end
+        
+        Label.Text = prefixText .. tostring(newVal)
         SliderFill.Size = UDim2.new(percent, 0, 1, 0)
         callback(newVal)
     end
@@ -260,12 +281,88 @@ local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, call
         dragging = true
         updateSlider({Position = Vector3.new(Players.LocalPlayer:GetMouse().X, 0, 0)})
     end)
-    UserInputService.InputChanged:Connect(function(input)
+    local c1 = UserInputService.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then updateSlider(input) end
     end)
-    UserInputService.InputEnded:Connect(function(input)
+    local c2 = UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
     end)
+    table.insert(connections, c1)
+    table.insert(connections, c2)
+end
+
+-- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ЛОГИКА ===
+local function getMyCar()
+    if workspace:FindFirstChild("Cars") then
+        for _, car in pairs(workspace.Cars:GetChildren()) do
+            local d = car:FindFirstChild("CurrentDriver")
+            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
+                return car
+            end
+        end
+    end
+    return nil
+end
+
+function updateNoclip(state)
+    if state then
+        if not noclipConnection then
+            noclipConnection = RunService.Stepped:Connect(function()
+                local car = getMyCar()
+                if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
+                local char = Players.LocalPlayer.Character
+                if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
+            end)
+        end
+    else
+        if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
+        local char = Players.LocalPlayer.Character
+        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Name ~= "DoorMain" and part.Name ~= "Exhaust" and part.Name ~= "Main" and part.Name ~= "Stars" and part.Name ~= "Contrast" then part.CanCollide = true end end end
+        local car = getMyCar()
+        if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end end
+    end
+end
+
+function setFreeze(state)
+    local char = Players.LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then hrp.Anchored = state end
+    end
+end
+
+-- === ФУНКЦИЯ SAFE QUIT ===
+local function SafeQuit()
+    _G.SmartRaceEnabled = false
+    _G.AutoCheckpointEnabled = false
+    _G.AutoFlyEnabled = false
+    _G.NoclipEnabled = false
+    _G.PlayerFrozen = false
+    _G.SpeedBoostEnabled = false 
+
+    updateNoclip(false)
+    setFreeze(false)
+
+    local car = getMyCar()
+    if car and car.PrimaryPart then
+        car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+    local char = Players.LocalPlayer.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+
+    for _, conn in ipairs(connections) do
+        if conn and conn.Connected then
+            conn:Disconnect()
+        end
+    end
+    table.clear(connections)
+
+    if ScreenGui then
+        ScreenGui:Destroy()
+    end
+    print("SmartRace Unloaded Safely!")
 end
 
 -- === СОЗДАНИЕ КАТЕГОРИЙ И КНОПОК ===
@@ -273,6 +370,12 @@ end
 -- 1. RACE
 local RaceCategory = createCategory("Race", UDim2.new(0, 50, 0, 50))
 local buttons = {} 
+
+function disableAllModes(exclude)
+    if exclude ~= "SmartRace" then _G.SmartRaceEnabled = false; buttons.SmartRace.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "AutoCheckpoint" then _G.AutoCheckpointEnabled = false; buttons.AutoCP.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
+end
 
 buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, function(state, btn)
     _G.SmartRaceEnabled = state
@@ -302,26 +405,18 @@ buttons.AutoFly = createToggle(RaceCategory, "Auto Fly", false, function(state, 
     end
 end)
 
-createSlider(RaceCategory, "Fly Speed: ", MIN_SPEED, MAX_SPEED, FLY_SPEED, function(val)
-    FLY_SPEED = val
-end)
-
+createSlider(RaceCategory, "Fly Speed: ", MIN_SPEED, MAX_SPEED, FLY_SPEED, 0, function(val) FLY_SPEED = val end)
 
 -- 2. PLAYER
 local PlayerCategory = createCategory("Player", UDim2.new(0, 250, 0, 50))
 
 createToggle(PlayerCategory, "Noclip", false, function(state) _G.NoclipEnabled = state; updateNoclip(state) end)
 createToggle(PlayerCategory, "Freeze Player", false, function(state) _G.PlayerFrozen = state; setFreeze(state) end)
+createToggle(PlayerCategory, "SpeedBoost (Hold W)", false, function(state) _G.SpeedBoostEnabled = state end)
 
--- Speed Boost Переключатель
-createToggle(PlayerCategory, "SpeedBoost (Hold W)", false, function(state)
-    _G.SpeedBoostEnabled = state
-end)
-
--- Слайдер для скорости Буста
-createSlider(PlayerCategory, "Boost Speed: ", MIN_BOOST, MAX_BOOST, BOOST_SPEED, function(val)
-    BOOST_SPEED = val
-end)
+-- Слайдеры для умножения скорости
+createSlider(PlayerCategory, "Speed Multiplier: ", MIN_MULT, MAX_MULT, SPEED_MULTIPLIER, 2, function(val) SPEED_MULTIPLIER = val end)
+createSlider(PlayerCategory, "Max Boost Speed: ", MIN_MAX_SPEED, MAX_MAX_SPEED, MAX_BOOST_SPEED, 0, function(val) MAX_BOOST_SPEED = val end)
 
 
 -- 3. SERVER
@@ -346,6 +441,7 @@ createAction(ServerCategory, "Server Exit Car", function(btn)
     task.wait(0.5)
     btn.Text = "Server Exit Car"
 end)
+createAction(ServerCategory, "Safe Quit (Unload)", function() SafeQuit() end, true)
 
 
 -- 4. INFO 
@@ -471,26 +567,7 @@ task.spawn(function()
 end)
 
 
--- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ЛОГИКА ===
-
-function disableAllModes(exclude)
-    if exclude ~= "SmartRace" then _G.SmartRaceEnabled = false; buttons.SmartRace.BackgroundColor3 = COLORS.ButtonNormal end
-    if exclude ~= "AutoCheckpoint" then _G.AutoCheckpointEnabled = false; buttons.AutoCP.BackgroundColor3 = COLORS.ButtonNormal end
-    if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
-end
-
-local function getMyCar()
-    if workspace:FindFirstChild("Cars") then
-        for _, car in pairs(workspace.Cars:GetChildren()) do
-            local d = car:FindFirstChild("CurrentDriver")
-            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
-                return car
-            end
-        end
-    end
-    return nil
-end
-
+-- === ФУНКЦИИ ПЕРЕМЕЩЕНИЯ (ПОЛЕТ И ПРОВЕРКИ ЦВЕТА) ===
 local function isBlue(c)
     if not c then return false end
     return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and math.abs(c.G*255 - TARGET_BLUE.G*255) <= TOLERANCE and math.abs(c.B*255 - TARGET_BLUE.B*255) <= TOLERANCE
@@ -538,25 +615,6 @@ local function flyTo(car, targetPart)
     end
 end
 
-function updateNoclip(state)
-    if state then
-        if not noclipConnection then
-            noclipConnection = RunService.Stepped:Connect(function()
-                local car = getMyCar()
-                if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
-                local char = Players.LocalPlayer.Character
-                if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
-            end)
-        end
-    else
-        if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
-        local char = Players.LocalPlayer.Character
-        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Name ~= "DoorMain" and part.Name ~= "Exhaust" and part.Name ~= "Main" and part.Name ~= "Stars" and part.Name ~= "Contrast" then part.CanCollide = true end end end
-        local car = getMyCar()
-        if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end end
-    end
-end
-
 function startSmartRaceLoop()
     while _G.SmartRaceEnabled do
         local target = findBestCheckpoint()
@@ -565,7 +623,7 @@ function startSmartRaceLoop()
 
         if not target then
             if hrp then
-                if gobutton.Visible == true and _G.SmartRaceTPd == false then
+                if gobutton and gobutton.Visible == true and _G.SmartRaceTPd == false then
                     _G.SmartRaceTPd = true
                     VirtualInputManager:SendMouseButtonEvent(gobutx, gobuty, 0, true, game, 1)
                     task.wait(0.1)
@@ -649,16 +707,8 @@ function startAutoFlyLoop()
     end
 end
 
-function setFreeze(state)
-    local char = Players.LocalPlayer.Character
-    if char then
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then hrp.Anchored = state end
-    end
-end
-
--- === ЛОГИКА SPEED BOOST (Как в Auto Checkpoint) ===
-RunService.Heartbeat:Connect(function()
+-- === ЛОГИКА SPEED BOOST (УМНОЖЕНИЕ СКОРОСТИ) ===
+table.insert(connections, RunService.Heartbeat:Connect(function()
     if _G.SpeedBoostEnabled and UserInputService:IsKeyDown(Enum.KeyCode.W) then
         local car = getMyCar()
         local root = nil
@@ -673,23 +723,49 @@ RunService.Heartbeat:Connect(function()
         end
         
         if root then
-            -- Физическое ускорение в сторону камеры/машины
-            root.AssemblyLinearVelocity = root.CFrame.LookVector * BOOST_SPEED
+            local raycastParams = RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {root.Parent} 
+            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+            -- Проверяем, на земле ли машина
+            local rayDirection = Vector3.new(0, -6, 0)
+            local rayResult = workspace:Raycast(root.Position, rayDirection, raycastParams)
+
+            if rayResult then
+                local currentVelocity = root.AssemblyLinearVelocity
+                local lookVector = root.CFrame.LookVector
+                
+                -- Текущая скорость строго вперед
+                local currentForwardSpeed = currentVelocity:Dot(lookVector)
+                
+                -- Чтобы умножение сработало, машина должна хоть немного ехать вперед (скорость > 5)
+                if currentForwardSpeed > 5 then
+                    
+                    -- Умножаем скорость на наш множитель (например, 1.05 = +5% каждый кадр)
+                    local newForwardSpeed = currentForwardSpeed * SPEED_MULTIPLIER
+                    
+                    -- Ограничиваем скорость, чтобы она не перешагнула лимит
+                    newForwardSpeed = math.min(newForwardSpeed, MAX_BOOST_SPEED)
+                    
+                    local boostVelocity = lookVector * newForwardSpeed
+                    root.AssemblyLinearVelocity = Vector3.new(boostVelocity.X, currentVelocity.Y, boostVelocity.Z)
+                end
+            end
         end
     end
-end)
+end))
 
-Players.LocalPlayer.CharacterAdded:Connect(function(char)
+table.insert(connections, Players.LocalPlayer.CharacterAdded:Connect(function(char)
     if _G.PlayerFrozen then
         local hrp = char:WaitForChild("HumanoidRootPart", 5)
         if hrp then hrp.Anchored = true end
     end
-end)
+end))
 
 -- === ГЛОБАЛЬНЫЕ КНОПКИ УПРАВЛЕНИЯ ===
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end 
     if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
-        ScreenGui.Enabled = not ScreenGui.Enabled
+        if ScreenGui then ScreenGui.Enabled = not ScreenGui.Enabled end
     end
-end)
+end))
