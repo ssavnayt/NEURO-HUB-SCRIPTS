@@ -20,7 +20,7 @@ _G.PlayerFrozen = false
 _G.SmartRaceTPd = false
 _G.SpeedBoostEnabled = false 
 
--- Таблица для хранения подключений событий (чтобы их можно было отключить)
+-- Таблица для хранения подключений
 local connections = {}
 
 -- Настройки
@@ -29,13 +29,17 @@ local MAX_SPEED = 2500
 local FLY_SPEED = 300
 
 -- Настройки умножения скорости
-local MIN_MULT = 1.001
-local MAX_MULT = 1.01
-local SPEED_MULTIPLIER = 1.05 -- На сколько умножать скорость каждый кадр
+local MIN_MULT = 1.0001
+local MAX_MULT = 1.050
+local SPEED_MULTIPLIER = 1.0005 
 
 local MIN_MAX_SPEED = 100
 local MAX_MAX_SPEED = 5000
-local MAX_BOOST_SPEED = 1000 -- Ограничитель скорости, чтобы машина не улетела в космос
+local MAX_BOOST_SPEED = 1000 
+
+-- Настройки биндов
+local SHIFT_AMOUNT = 15
+local INSTA_BOOST_SPEED = 500
 
 local DEFAULT_HEIGHT = 15
 local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
@@ -231,7 +235,7 @@ local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, deci
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(1, 0, 0, 25)
     Label.BackgroundTransparency = 1
-    Label.Text = prefixText .. defaultVal
+    Label.Text = prefixText .. string.format("%."..decimals.."f", defaultVal)
     Label.TextColor3 = COLORS.Text
     Label.Font = Enum.Font.Gotham
     Label.TextSize = 13
@@ -272,7 +276,7 @@ local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, deci
             newVal = math.floor(newVal * mult + 0.5) / mult
         end
         
-        Label.Text = prefixText .. tostring(newVal)
+        Label.Text = prefixText .. string.format("%."..decimals.."f", newVal)
         SliderFill.Size = UDim2.new(percent, 0, 1, 0)
         callback(newVal)
     end
@@ -291,6 +295,77 @@ local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, deci
     table.insert(connections, c2)
 end
 
+-- === БИНДЫ (ГЛОБАЛЬНЫЕ СОСТОЯНИЯ) ===
+local Binds = {
+    FastStop = { Key = Enum.KeyCode.Space, Enabled = false },
+    GoUp = { Key = Enum.KeyCode.U, Enabled = false },
+    GoDown = { Key = Enum.KeyCode.J, Enabled = false },
+    InstaBoost = { Key = Enum.KeyCode.G, Enabled = false },
+    ToggleSmartRace = { Key = Enum.KeyCode.Z, Enabled = false },
+    ToggleAutoCP = { Key = Enum.KeyCode.X, Enabled = false },
+    ToggleNoclip = { Key = Enum.KeyCode.C, Enabled = false }
+}
+local currentlyBinding = nil
+
+local function createKeybind(parent, text, bindId)
+    local BindFrame = Instance.new("Frame")
+    BindFrame.Size = UDim2.new(1, 0, 0, 35)
+    BindFrame.BackgroundColor3 = COLORS.ButtonNormal
+    BindFrame.BorderSizePixel = 0
+    BindFrame.Parent = parent
+
+    -- Кнопка включения бинда
+    local ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Size = UDim2.new(0, 25, 0, 25)
+    ToggleBtn.Position = UDim2.new(0, 5, 0, 5)
+    ToggleBtn.BackgroundColor3 = COLORS.Background
+    ToggleBtn.BorderSizePixel = 0
+    ToggleBtn.Text = ""
+    ToggleBtn.AutoButtonColor = false
+    ToggleBtn.Parent = BindFrame
+
+    local function updateToggleUI()
+        ToggleBtn.BackgroundColor3 = Binds[bindId].Enabled and COLORS.ButtonActive or COLORS.ButtonDanger
+    end
+    updateToggleUI()
+
+    ToggleBtn.MouseButton1Click:Connect(function()
+        Binds[bindId].Enabled = not Binds[bindId].Enabled
+        updateToggleUI()
+    end)
+
+    -- Текст
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -95, 1, 0)
+    Label.Position = UDim2.new(0, 35, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = COLORS.Text
+    Label.Font = Enum.Font.Gotham
+    Label.TextSize = 12
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = BindFrame
+
+    -- Кнопка смены клавиши
+    local KeyBtn = Instance.new("TextButton")
+    KeyBtn.Size = UDim2.new(0, 50, 0, 25)
+    KeyBtn.Position = UDim2.new(1, -55, 0, 5)
+    KeyBtn.BackgroundColor3 = COLORS.Header
+    KeyBtn.BorderSizePixel = 0
+    KeyBtn.Text = Binds[bindId].Key.Name
+    KeyBtn.TextColor3 = COLORS.ButtonActive
+    KeyBtn.Font = Enum.Font.GothamBold
+    KeyBtn.TextSize = 11
+    KeyBtn.Parent = BindFrame
+    
+    Binds[bindId].Btn = KeyBtn -- Сохраняем ссылку для обновления текста
+
+    KeyBtn.MouseButton1Click:Connect(function()
+        KeyBtn.Text = "..."
+        currentlyBinding = bindId
+    end)
+end
+
 -- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ЛОГИКА ===
 local function getMyCar()
     if workspace:FindFirstChild("Cars") then
@@ -304,7 +379,20 @@ local function getMyCar()
     return nil
 end
 
+local function getRootPart()
+    local car = getMyCar()
+    if car then
+        return car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+    end
+    local char = Players.LocalPlayer.Character
+    if char then
+        return char:FindFirstChild("HumanoidRootPart")
+    end
+    return nil
+end
+
 function updateNoclip(state)
+    _G.NoclipEnabled = state
     if state then
         if not noclipConnection then
             noclipConnection = RunService.Stepped:Connect(function()
@@ -343,13 +431,9 @@ local function SafeQuit()
     updateNoclip(false)
     setFreeze(false)
 
-    local car = getMyCar()
-    if car and car.PrimaryPart then
-        car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-    end
-    local char = Players.LocalPlayer.Character
-    if char and char:FindFirstChild("HumanoidRootPart") then
-        char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    local root = getRootPart()
+    if root then
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     end
 
     for _, conn in ipairs(connections) do
@@ -366,10 +450,10 @@ local function SafeQuit()
 end
 
 -- === СОЗДАНИЕ КАТЕГОРИЙ И КНОПОК ===
+local buttons = {} 
 
 -- 1. RACE
 local RaceCategory = createCategory("Race", UDim2.new(0, 50, 0, 50))
-local buttons = {} 
 
 function disableAllModes(exclude)
     if exclude ~= "SmartRace" then _G.SmartRaceEnabled = false; buttons.SmartRace.BackgroundColor3 = COLORS.ButtonNormal end
@@ -377,8 +461,10 @@ function disableAllModes(exclude)
     if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
 end
 
-buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, function(state, btn)
+-- Выносим логику кнопок в отдельные функции, чтобы их могли вызывать бинды
+local function toggleSmartRaceLogic(state)
     _G.SmartRaceEnabled = state
+    buttons.SmartRace.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
     if state then
         disableAllModes("SmartRace")
         task.spawn(startSmartRaceLoop)
@@ -387,17 +473,27 @@ buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, function(sta
         local char = Players.LocalPlayer.Character
         if char and char:FindFirstChild("HumanoidRootPart") then char.HumanoidRootPart.Anchored = false end
     end
-end)
+end
 
-buttons.AutoCP = createToggle(RaceCategory, "Auto Checkpoint", false, function(state, btn)
+local function toggleAutoCPLogic(state)
     _G.AutoCheckpointEnabled = state
+    buttons.AutoCP.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
     if state then
         disableAllModes("AutoCheckpoint")
         task.spawn(startAutoCPLoop)
     end
-end)
+end
 
-buttons.AutoFly = createToggle(RaceCategory, "Auto Fly", false, function(state, btn)
+local function toggleNoclipLogic(state)
+    updateNoclip(state)
+    if buttons.Noclip then
+        buttons.Noclip.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
+    end
+end
+
+buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, toggleSmartRaceLogic)
+buttons.AutoCP = createToggle(RaceCategory, "Auto Checkpoint", false, toggleAutoCPLogic)
+buttons.AutoFly = createToggle(RaceCategory, "Auto Fly", false, function(state)
     _G.AutoFlyEnabled = state
     if state then
         disableAllModes("AutoFly")
@@ -407,15 +503,15 @@ end)
 
 createSlider(RaceCategory, "Fly Speed: ", MIN_SPEED, MAX_SPEED, FLY_SPEED, 0, function(val) FLY_SPEED = val end)
 
+
 -- 2. PLAYER
 local PlayerCategory = createCategory("Player", UDim2.new(0, 250, 0, 50))
 
-createToggle(PlayerCategory, "Noclip", false, function(state) _G.NoclipEnabled = state; updateNoclip(state) end)
+buttons.Noclip = createToggle(PlayerCategory, "Noclip", false, toggleNoclipLogic)
 createToggle(PlayerCategory, "Freeze Player", false, function(state) _G.PlayerFrozen = state; setFreeze(state) end)
 createToggle(PlayerCategory, "SpeedBoost (Hold W)", false, function(state) _G.SpeedBoostEnabled = state end)
 
--- Слайдеры для умножения скорости
-createSlider(PlayerCategory, "Speed Multiplier: ", MIN_MULT, MAX_MULT, SPEED_MULTIPLIER, 2, function(val) SPEED_MULTIPLIER = val end)
+createSlider(PlayerCategory, "Speed Multiplier: ", MIN_MULT, MAX_MULT, SPEED_MULTIPLIER, 3, function(val) SPEED_MULTIPLIER = val end)
 createSlider(PlayerCategory, "Max Boost Speed: ", MIN_MAX_SPEED, MAX_MAX_SPEED, MAX_BOOST_SPEED, 0, function(val) MAX_BOOST_SPEED = val end)
 
 
@@ -427,13 +523,11 @@ createAction(ServerCategory, "ServerSide AFK", function(btn)
     task.wait(0.5)
     btn.Text = "ServerSide AFK"
 end)
-createAction(ServerCategory, "Shop Reset (Test)", function(btn)
-    btn.Text = "Resetting... 0/2"
+createAction(ServerCategory, "Shop Reset (REPORTED)", function(btn)
+    btn.Text = "Resetting... 0/1"
     game:GetService("ReplicatedStorage").Systems.Shop.ResetShopData:InvokeServer("Ping")
-    btn.Text = "Reseting... 1/2"
-    game:GetService("ReplicatedStorage").Systems.Shop.GetRobuxShopOffers:InvokeServer("Ping")
     task.wait(0.5)
-    btn.Text = "Shop Reset (Test)"
+    btn.Text = "Shop Reset (REPORTED)"
 end)
 createAction(ServerCategory, "Server Exit Car", function(btn)
     btn.Text = "Exiting car..."
@@ -566,8 +660,22 @@ task.spawn(function()
     end
 end)
 
+-- 5. BINDABLES
+local BindsCategory = createCategory("Bindables", UDim2.new(0, 850, 0, 50))
 
--- === ФУНКЦИИ ПЕРЕМЕЩЕНИЯ (ПОЛЕТ И ПРОВЕРКИ ЦВЕТА) ===
+createKeybind(BindsCategory, "Fast Stop", "FastStop")
+createKeybind(BindsCategory, "Go Up", "GoUp")
+createKeybind(BindsCategory, "Go Down", "GoDown")
+createKeybind(BindsCategory, "Momental Boost", "InstaBoost")
+createKeybind(BindsCategory, "Toggle SmartRace", "ToggleSmartRace")
+createKeybind(BindsCategory, "Toggle AutoCP", "ToggleAutoCP")
+createKeybind(BindsCategory, "Toggle Noclip", "ToggleNoclip")
+
+createSlider(BindsCategory, "Shift Amount: ", 1, 100, SHIFT_AMOUNT, 0, function(val) SHIFT_AMOUNT = val end)
+createSlider(BindsCategory, "Insta Boost: ", 100, 5000, INSTA_BOOST_SPEED, 0, function(val) INSTA_BOOST_SPEED = val end)
+
+
+-- === ФУНКЦИИ ПЕРЕМЕЩЕНИЯ И ЦИКЛЫ ===
 local function isBlue(c)
     if not c then return false end
     return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and math.abs(c.G*255 - TARGET_BLUE.G*255) <= TOLERANCE and math.abs(c.B*255 - TARGET_BLUE.B*255) <= TOLERANCE
@@ -707,27 +815,16 @@ function startAutoFlyLoop()
     end
 end
 
--- === ЛОГИКА SPEED BOOST (УМНОЖЕНИЕ СКОРОСТИ) ===
-table.insert(connections, RunService.Heartbeat:Connect(function()
+-- === ЛОГИКА SPEED BOOST ===
+table.insert(connections, RunService.Heartbeat:Connect(function(deltaTime)
     if _G.SpeedBoostEnabled and UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        local car = getMyCar()
-        local root = nil
-        
-        if car then
-            root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
-        else
-            local char = Players.LocalPlayer.Character
-            if char then 
-                root = char:FindFirstChild("HumanoidRootPart") 
-            end
-        end
+        local root = getRootPart()
         
         if root then
             local raycastParams = RaycastParams.new()
             raycastParams.FilterDescendantsInstances = {root.Parent} 
             raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 
-            -- Проверяем, на земле ли машина
             local rayDirection = Vector3.new(0, -6, 0)
             local rayResult = workspace:Raycast(root.Position, rayDirection, raycastParams)
 
@@ -735,16 +832,12 @@ table.insert(connections, RunService.Heartbeat:Connect(function()
                 local currentVelocity = root.AssemblyLinearVelocity
                 local lookVector = root.CFrame.LookVector
                 
-                -- Текущая скорость строго вперед
                 local currentForwardSpeed = currentVelocity:Dot(lookVector)
                 
-                -- Чтобы умножение сработало, машина должна хоть немного ехать вперед (скорость > 5)
                 if currentForwardSpeed > 5 then
+                    local frameMultiplier = math.pow(SPEED_MULTIPLIER, deltaTime * 60)
+                    local newForwardSpeed = currentForwardSpeed * frameMultiplier
                     
-                    -- Умножаем скорость на наш множитель (например, 1.05 = +5% каждый кадр)
-                    local newForwardSpeed = currentForwardSpeed * SPEED_MULTIPLIER
-                    
-                    -- Ограничиваем скорость, чтобы она не перешагнула лимит
                     newForwardSpeed = math.min(newForwardSpeed, MAX_BOOST_SPEED)
                     
                     local boostVelocity = lookVector * newForwardSpeed
@@ -762,10 +855,63 @@ table.insert(connections, Players.LocalPlayer.CharacterAdded:Connect(function(ch
     end
 end))
 
--- === ГЛОБАЛЬНЫЕ КНОПКИ УПРАВЛЕНИЯ ===
+-- === ГЛОБАЛЬНЫЕ КНОПКИ УПРАВЛЕНИЯ И ОБРАБОТЧИК БИНДОВ ===
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if currentlyBinding then
+        if input.KeyCode == Enum.KeyCode.Escape then
+            currentlyBinding = nil
+            return
+        end
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            Binds[currentlyBinding].Key = input.KeyCode
+            Binds[currentlyBinding].Btn.Text = input.KeyCode.Name
+            currentlyBinding = nil
+        end
+        return
+    end
+
     if gameProcessed then return end 
+
+    -- Скрытие/Показ GUI
     if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
         if ScreenGui then ScreenGui.Enabled = not ScreenGui.Enabled end
+    end
+
+    -- Обработка биндов
+    local keyCode = input.KeyCode
+
+    if Binds.FastStop.Enabled and keyCode == Binds.FastStop.Key then
+        local root = getRootPart()
+        if root then
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+
+    if Binds.GoUp.Enabled and keyCode == Binds.GoUp.Key then
+        local root = getRootPart()
+        if root then root.CFrame = root.CFrame + Vector3.new(0, SHIFT_AMOUNT, 0) end
+    end
+
+    if Binds.GoDown.Enabled and keyCode == Binds.GoDown.Key then
+        local root = getRootPart()
+        if root then root.CFrame = root.CFrame - Vector3.new(0, SHIFT_AMOUNT, 0) end
+    end
+
+    if Binds.InstaBoost.Enabled and keyCode == Binds.InstaBoost.Key then
+        local root = getRootPart()
+        if root then root.AssemblyLinearVelocity = root.CFrame.LookVector * INSTA_BOOST_SPEED end
+    end
+
+    if Binds.ToggleSmartRace.Enabled and keyCode == Binds.ToggleSmartRace.Key then
+        toggleSmartRaceLogic(not _G.SmartRaceEnabled)
+    end
+
+    if Binds.ToggleAutoCP.Enabled and keyCode == Binds.ToggleAutoCP.Key then
+        toggleAutoCPLogic(not _G.AutoCheckpointEnabled)
+    end
+
+    if Binds.ToggleNoclip.Enabled and keyCode == Binds.ToggleNoclip.Key then
+        toggleNoclipLogic(not _G.NoclipEnabled)
     end
 end))
