@@ -5,10 +5,15 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local GuiService = game:GetService("GuiService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris") 
 
 -- Очистка старого GUI перед запуском
 if CoreGui:FindFirstChild("SmartRaceClickGui") then
     CoreGui.SmartRaceClickGui:Destroy()
+end
+if CoreGui:FindFirstChild("SmartRaceNotifyGui") then
+    CoreGui.SmartRaceNotifyGui:Destroy()
 end
 
 -- Глобальные переключатели
@@ -19,6 +24,12 @@ _G.NoclipEnabled = false
 _G.PlayerFrozen = false
 _G.SmartRaceTPd = false
 _G.SpeedBoostEnabled = false 
+
+-- Переключатели для уведомлений
+_G.NotifyWinner = true
+_G.NotifyLeaderboard = true
+_G.NotifySpeedTrap = true
+_G.NotifyGuild = true
 
 -- Таблица для хранения подключений
 local connections = {}
@@ -76,12 +87,110 @@ local COLORS = {
     Outline = Color3.fromRGB(10, 10, 10)
 }
 
--- --- GUI ИНТЕРФЕЙС ---
+-- === СИСТЕМА ЗВУКОВ ===
+local function PlaySound(id, pitch)
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. tostring(id)
+    sound.PlaybackSpeed = pitch or 1
+    sound.Volume = 1.5
+    sound.Parent = CoreGui
+    sound:Play()
+    Debris:AddItem(sound, 5) -- Авто-удаление через 5 сек
+end
+
+-- --- GUI ИНТЕРФЕЙС (Главное меню) ---
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SmartRaceClickGui"
 ScreenGui.Parent = CoreGui
 ScreenGui.DisplayOrder = 100
 ScreenGui.ResetOnSpawn = false
+
+-- --- GUI УВЕДОМЛЕНИЙ (Отдельное, чтобы не скрывалось на Ctrl) ---
+local NotifyGui = Instance.new("ScreenGui")
+NotifyGui.Name = "SmartRaceNotifyGui"
+NotifyGui.Parent = CoreGui
+NotifyGui.DisplayOrder = 101
+NotifyGui.ResetOnSpawn = false
+
+local NotificationContainer = Instance.new("Frame")
+NotificationContainer.Name = "NotificationContainer"
+NotificationContainer.Size = UDim2.new(0, 250, 1, -20)
+NotificationContainer.Position = UDim2.new(1, -260, 0, 10)
+NotificationContainer.BackgroundTransparency = 1
+NotificationContainer.Parent = NotifyGui
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = NotificationContainer
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+UIListLayout.Padding = UDim.new(0, 10)
+
+local function SendNotification(title, text, duration)
+    duration = duration or 5
+
+    -- Проигрываем звук уведомления (тон +2)
+    PlaySound(103750838557977, 2)
+
+    local NotifFrame = Instance.new("Frame")
+    NotifFrame.Size = UDim2.new(1, 0, 0, 60)
+    NotifFrame.BackgroundColor3 = COLORS.Background
+    NotifFrame.BorderSizePixel = 0
+    NotifFrame.BackgroundTransparency = 1 
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = COLORS.ButtonActive
+    Stroke.Thickness = 2
+    Stroke.Transparency = 1
+    Stroke.Parent = NotifFrame
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -10, 0, 20)
+    TitleLabel.Position = UDim2.new(0, 5, 0, 5)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = COLORS.ButtonActive
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextSize = 14
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.TextTransparency = 1
+    TitleLabel.Parent = NotifFrame
+
+    local DescLabel = Instance.new("TextLabel")
+    DescLabel.Size = UDim2.new(1, -10, 0, 30)
+    DescLabel.Position = UDim2.new(0, 5, 0, 25)
+    DescLabel.BackgroundTransparency = 1
+    DescLabel.Text = text
+    DescLabel.TextColor3 = COLORS.Text
+    DescLabel.Font = Enum.Font.Gotham
+    DescLabel.TextSize = 12
+    DescLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DescLabel.TextWrapped = true
+    DescLabel.TextTransparency = 1
+    DescLabel.Parent = NotifFrame
+
+    NotifFrame.Parent = NotificationContainer
+
+    -- Анимация появления
+    TweenService:Create(NotifFrame, TweenInfo.new(0.5), {BackgroundTransparency = 0.1}):Play()
+    TweenService:Create(Stroke, TweenInfo.new(0.5), {Transparency = 0}):Play()
+    TweenService:Create(TitleLabel, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+    TweenService:Create(DescLabel, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+
+    -- Удаление
+    task.spawn(function()
+        task.wait(duration)
+        if NotifFrame and NotifFrame.Parent then
+            local tw1 = TweenService:Create(NotifFrame, TweenInfo.new(0.5), {BackgroundTransparency = 1})
+            TweenService:Create(Stroke, TweenInfo.new(0.5), {Transparency = 1}):Play()
+            TweenService:Create(TitleLabel, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+            TweenService:Create(DescLabel, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+            tw1:Play()
+            tw1.Completed:Wait()
+            NotifFrame:Destroy()
+        end
+    end)
+end
+-- ===================================
 
 local function createCategory(name, position)
     local Frame = Instance.new("Frame")
@@ -190,6 +299,9 @@ local function createToggle(parent, text, defaultState, callback)
     Button.MouseButton1Click:Connect(function()
         state = not state
         Button.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonHover
+        if state then 
+            PlaySound(542332175, 1) -- Звук включения
+        end
         callback(state, Button)
     end)
     return Button
@@ -215,6 +327,7 @@ local function createAction(parent, text, callback, isDanger)
     end)
     Button.MouseButton1Click:Connect(function()
         if not isDanger then Button.BackgroundColor3 = COLORS.ButtonActive end
+        PlaySound(542332175, 1) -- Звук действия
         task.spawn(function()
             callback(Button)
             task.wait(0.2)
@@ -314,7 +427,6 @@ local function createKeybind(parent, text, bindId)
     BindFrame.BorderSizePixel = 0
     BindFrame.Parent = parent
 
-    -- Кнопка включения бинда
     local ToggleBtn = Instance.new("TextButton")
     ToggleBtn.Size = UDim2.new(0, 25, 0, 25)
     ToggleBtn.Position = UDim2.new(0, 5, 0, 5)
@@ -331,10 +443,10 @@ local function createKeybind(parent, text, bindId)
 
     ToggleBtn.MouseButton1Click:Connect(function()
         Binds[bindId].Enabled = not Binds[bindId].Enabled
+        if Binds[bindId].Enabled then PlaySound(542332175, 1) end
         updateToggleUI()
     end)
 
-    -- Текст
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(1, -95, 1, 0)
     Label.Position = UDim2.new(0, 35, 0, 0)
@@ -346,7 +458,6 @@ local function createKeybind(parent, text, bindId)
     Label.TextXAlignment = Enum.TextXAlignment.Left
     Label.Parent = BindFrame
 
-    -- Кнопка смены клавиши
     local KeyBtn = Instance.new("TextButton")
     KeyBtn.Size = UDim2.new(0, 50, 0, 25)
     KeyBtn.Position = UDim2.new(1, -55, 0, 5)
@@ -358,7 +469,7 @@ local function createKeybind(parent, text, bindId)
     KeyBtn.TextSize = 11
     KeyBtn.Parent = BindFrame
     
-    Binds[bindId].Btn = KeyBtn -- Сохраняем ссылку для обновления текста
+    Binds[bindId].Btn = KeyBtn
 
     KeyBtn.MouseButton1Click:Connect(function()
         KeyBtn.Text = "..."
@@ -443,9 +554,8 @@ local function SafeQuit()
     end
     table.clear(connections)
 
-    if ScreenGui then
-        ScreenGui:Destroy()
-    end
+    if ScreenGui then ScreenGui:Destroy() end
+    if NotifyGui then NotifyGui:Destroy() end
     print("SmartRace Unloaded Safely!")
 end
 
@@ -461,7 +571,6 @@ function disableAllModes(exclude)
     if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
 end
 
--- Выносим логику кнопок в отдельные функции, чтобы их могли вызывать бинды
 local function toggleSmartRaceLogic(state)
     _G.SmartRaceEnabled = state
     buttons.SmartRace.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
@@ -503,7 +612,6 @@ end)
 
 createSlider(RaceCategory, "Fly Speed: ", MIN_SPEED, MAX_SPEED, FLY_SPEED, 0, function(val) FLY_SPEED = val end)
 
-
 -- 2. PLAYER
 local PlayerCategory = createCategory("Player", UDim2.new(0, 250, 0, 50))
 
@@ -513,7 +621,6 @@ createToggle(PlayerCategory, "SpeedBoost (Hold W)", false, function(state) _G.Sp
 
 createSlider(PlayerCategory, "Speed Multiplier: ", MIN_MULT, MAX_MULT, SPEED_MULTIPLIER, 3, function(val) SPEED_MULTIPLIER = val end)
 createSlider(PlayerCategory, "Max Boost Speed: ", MIN_MAX_SPEED, MAX_MAX_SPEED, MAX_BOOST_SPEED, 0, function(val) MAX_BOOST_SPEED = val end)
-
 
 -- 3. SERVER
 local ServerCategory = createCategory("Server", UDim2.new(0, 450, 0, 50))
@@ -536,7 +643,6 @@ createAction(ServerCategory, "Server Exit Car", function(btn)
     btn.Text = "Server Exit Car"
 end)
 createAction(ServerCategory, "Safe Quit (Unload)", function() SafeQuit() end, true)
-
 
 -- 4. INFO 
 local InfoCategory = createCategory("Info", UDim2.new(0, 650, 0, 50))
@@ -674,6 +780,79 @@ createKeybind(BindsCategory, "Toggle Noclip", "ToggleNoclip")
 createSlider(BindsCategory, "Shift Amount: ", 1, 100, SHIFT_AMOUNT, 0, function(val) SHIFT_AMOUNT = val end)
 createSlider(BindsCategory, "Insta Boost: ", 100, 5000, INSTA_BOOST_SPEED, 0, function(val) INSTA_BOOST_SPEED = val end)
 
+-- 6. NOTIFICATIONS (ОБНОВЛЕННЫЕ)
+local NotifCategory = createCategory("Notifications", UDim2.new(0, 1050, 0, 50))
+
+createToggle(NotifCategory, "Notify Winner", _G.NotifyWinner, function(state) _G.NotifyWinner = state end)
+createToggle(NotifCategory, "Notify Leaderboard", _G.NotifyLeaderboard, function(state) _G.NotifyLeaderboard = state end)
+createToggle(NotifCategory, "Notify SpeedTrap", _G.NotifySpeedTrap, function(state) _G.NotifySpeedTrap = state end)
+createToggle(NotifCategory, "Notify Guild", _G.NotifyGuild, function(state) _G.NotifyGuild = state end)
+
+-- === ОБРАБОТКА ИВЕНТОВ УВЕДОМЛЕНИЙ ===
+local RepStorage = game:GetService("ReplicatedStorage")
+local Systems = RepStorage:WaitForChild("Systems", 5)
+
+if Systems then
+    -- Winner Broadcast
+    local R_Winner = Systems:FindFirstChild("Races") and Systems.Races:FindFirstChild("BroadcastWinner")
+    if R_Winner then
+        table.insert(connections, R_Winner.OnClientEvent:Connect(function(plr, time, raceLoc)
+            if _G.NotifyWinner then
+                local pName = typeof(plr) == "Instance" and plr.Name or tostring(plr)
+                local rName = typeof(raceLoc) == "Instance" and raceLoc.Name or tostring(raceLoc)
+                local formatTime = string.format("%.2f", tonumber(time) or 0)
+                SendNotification("Race Winner!", pName.." won on "..rName.."\nTime: "..formatTime.."s", 6)
+            end
+        end))
+    end
+
+    -- Leaderboard Updated
+    local R_Leaderboard = Systems:FindFirstChild("DailyRaces") and Systems.DailyRaces:FindFirstChild("LeaderboardUpdated")
+    if R_Leaderboard then
+        table.insert(connections, R_Leaderboard.OnClientEvent:Connect(function(...)
+            if _G.NotifyLeaderboard then
+                SendNotification("Leaderboard", "Daily Races Leaderboard has been updated!", 5)
+                print("[SmartRace - LeaderboardUpdated Info]")
+                local args = {...}
+                for i, v in ipairs(args) do print("Arg " .. tostring(i) .. ":", v) end
+                print("-----------------------------------")
+            end
+        end))
+    end
+
+    -- SpeedTrap
+    local R_SpeedTrap = Systems:FindFirstChild("Objects") and Systems.Objects:FindFirstChild("Members") and Systems.Objects.Members:FindFirstChild("SpeedTrap") and Systems.Objects.Members.SpeedTrap:FindFirstChild("CameraSnapped")
+    if R_SpeedTrap then
+        table.insert(connections, R_SpeedTrap.OnClientEvent:Connect(function(...)
+            if _G.NotifySpeedTrap then SendNotification("Speed Trap", "Camera Snapped!", 4) end
+        end))
+    end
+
+    -- Guild Update
+    local R_Guild = Systems:FindFirstChild("Guilds") and Systems.Guilds:FindFirstChild("Update")
+    if R_Guild then
+        table.insert(connections, R_Guild.OnClientEvent:Connect(function(data)
+            if _G.NotifyGuild then
+                SendNotification("Club Updated", "Guild data was updated! Check Console (F9)", 5)
+                print("[SmartRace - GuildUpdate Info]")
+                if type(data) == "table" then
+                    print("CanMembersInvite:", tostring(data.CanMembersInvite))
+                    print("PublicallyJoinable:", tostring(data.PublicallyJoinable))
+                    print("Owner (UserID):", tostring(data.Owner))
+                    print("Members:")
+                    if type(data.Members) == "table" then
+                        for k, v in pairs(data.Members) do print("  ["..tostring(k).."] = ", v) end
+                    else
+                        print("  (Field 'Members' is not a table)")
+                    end
+                else
+                    print("Data:", data)
+                end
+                print("-----------------------------------")
+            end
+        end))
+    end
+end
 
 -- === ФУНКЦИИ ПЕРЕМЕЩЕНИЯ И ЦИКЛЫ ===
 local function isBlue(c)
@@ -872,7 +1051,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
 
     if gameProcessed then return end 
 
-    -- Скрытие/Показ GUI
+    -- Скрытие/Показ GUI (Скрывает только главное меню, уведомления остаются)
     if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
         if ScreenGui then ScreenGui.Enabled = not ScreenGui.Enabled end
     end
@@ -904,14 +1083,20 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
     end
 
     if Binds.ToggleSmartRace.Enabled and keyCode == Binds.ToggleSmartRace.Key then
-        toggleSmartRaceLogic(not _G.SmartRaceEnabled)
+        local newState = not _G.SmartRaceEnabled
+        if newState then PlaySound(542332175, 1) end
+        toggleSmartRaceLogic(newState)
     end
 
     if Binds.ToggleAutoCP.Enabled and keyCode == Binds.ToggleAutoCP.Key then
-        toggleAutoCPLogic(not _G.AutoCheckpointEnabled)
+        local newState = not _G.AutoCheckpointEnabled
+        if newState then PlaySound(542332175, 1) end
+        toggleAutoCPLogic(newState)
     end
 
     if Binds.ToggleNoclip.Enabled and keyCode == Binds.ToggleNoclip.Key then
-        toggleNoclipLogic(not _G.NoclipEnabled)
+        local newState = not _G.NoclipEnabled
+        if newState then PlaySound(542332175, 1) end
+        toggleNoclipLogic(newState)
     end
 end))
