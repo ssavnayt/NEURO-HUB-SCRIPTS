@@ -1452,4 +1452,4 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
 end))
 
 updateDriftUI()
-print("SmartRace + DriftGlitch V5 + FarmPatch — Merged Script Loaded!")
+print("Neuro Hub Loaded successfully")
