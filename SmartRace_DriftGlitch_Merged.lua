@@ -1,0 +1,1481 @@
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local GuiService = game:GetService("GuiService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris") 
+
+-- Очистка старого GUI перед запуском
+if CoreGui:FindFirstChild("SmartRaceClickGui") then
+    CoreGui.SmartRaceClickGui:Destroy()
+end
+if CoreGui:FindFirstChild("SmartRaceNotifyGui") then
+    CoreGui.SmartRaceNotifyGui:Destroy()
+end
+if CoreGui:FindFirstChild("DriftGlitchGui") then
+    CoreGui.DriftGlitchGui:Destroy()
+end
+
+-- Глобальные переключатели (SmartRace)
+_G.SmartRaceEnabled = false
+_G.AutoCheckpointEnabled = false
+_G.AutoFlyEnabled = false
+_G.NoclipEnabled = false
+_G.PlayerFrozen = false
+_G.SmartRaceTPd = false
+_G.SpeedBoostEnabled = false
+_G.FarmPatchEnabled = false
+
+-- Переключатели для уведомлений
+_G.NotifyWinner = true
+_G.NotifyLeaderboard = true
+_G.NotifySpeedTrap = true
+_G.NotifyGuild = true
+
+-- Глобальные переключатели (DriftGlitch)
+_G.DriftGlitchActive = false
+_G.PlatformModeActive = false
+_G.AutoDriftActive = false
+_G.DriftAngle = 25
+_G.DriftSide = 1
+
+-- AirFarm настройки
+local AIRFARM_HEIGHT = 500
+local AIRFARM_SPEED = 300
+local MIN_AIRFARM_HEIGHT = 100
+local MAX_AIRFARM_HEIGHT = 2000
+local MIN_AIRFARM_SPEED = 50
+local MAX_AIRFARM_SPEED = 2500
+local AIRFARM_WAVE_AMP  = 150  -- амплитуда (насколько вверх/вниз от базовой высоты)
+local AIRFARM_WAVE_FREQ = 0.4  -- частота (чем больше — тем быстрее качает)
+local MIN_AIRFARM_AMP   = 10
+local MAX_AIRFARM_AMP   = 800
+local MIN_AIRFARM_FREQ  = 0.05
+local MAX_AIRFARM_FREQ  = 2.0
+local AIRFARM_BURST_TIME = 2.0 -- сколько секунд едет
+local AIRFARM_STOP_TIME  = 1.0 -- сколько секунд стоит
+local MIN_AIRFARM_BURST  = 0.2
+local MAX_AIRFARM_BURST  = 10.0
+local MIN_AIRFARM_STOP   = 0.1
+local MAX_AIRFARM_STOP   = 10.0
+local AIRFARM_MAX_DIST   = 1000 -- максимальный вылет от центра до телепорта
+local MIN_AIRFARM_DIST   = 100
+local MAX_AIRFARM_DIST   = 5000
+
+-- DriftGlitch настройки
+local MIN_DRIFT_ANGLE = 15
+local MAX_DRIFT_ANGLE = 45
+local DRIFT_MIN_SPEED = 1
+local ANTI_SPIN = 0.88
+local platformFolder = nil
+local savedCFrame = nil
+local PLATFORM_HEIGHT = 80
+local TARGET_HEIGHT = PLATFORM_HEIGHT + 12
+local DOWN_FORCE = 18
+local ANTI_FALL_FORCE = 7
+
+-- Таблица для хранения подключений
+local connections = {}
+
+-- Настройки SmartRace
+local MIN_SPEED = 100
+local MAX_SPEED = 2500
+local FLY_SPEED = 300
+
+local MIN_MULT = 1.0001
+local MAX_MULT = 1.050
+local SPEED_MULTIPLIER = 1.0005 
+
+local MIN_MAX_SPEED = 100
+local MAX_MAX_SPEED = 5000
+local MAX_BOOST_SPEED = 1000 
+
+local SHIFT_AMOUNT = 15
+local INSTA_BOOST_SPEED = 500
+
+local DEFAULT_HEIGHT = 15
+local TARGET_BLUE = Color3.fromRGB(55, 155, 255)
+local TARGET_GREEN = Color3.fromRGB(55, 400, 0)
+local TOLERANCE = 25
+
+local WAITING_CFRAME = CFrame.new(
+    -1147.74719, 0.751161933, 2038.3446, 
+    -1.1920929e-07, -1.00000012, 0, 
+    -1.00000012, -1.1920929e-07, 0, 
+    -0, 0, -1.00000024
+)
+
+local gobutton = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("LiveQueue") and game:GetService("Players").LocalPlayer.PlayerGui.LiveQueue.Center.Teleport or nil
+local gobutpos = gobutton and gobutton.AbsolutePosition or Vector2.new(0,0)
+local gobutsize = gobutton and gobutton.AbsoluteSize or Vector2.new(0,0)
+local gobuty = gobutpos.Y + gobutsize.Y / 2
+local gobutx = gobutpos.X + gobutsize.X / 2
+local inset = GuiService:GetGuiInset()
+gobuty = gobuty + inset.Y
+
+local noclipConnection = nil
+
+-- === НАСТРОЙКИ СТИЛЯ ===
+local COLORS = {
+    Header = Color3.fromRGB(30, 30, 30),
+    Background = Color3.fromRGB(20, 20, 20),
+    ButtonNormal = Color3.fromRGB(25, 25, 25),
+    ButtonHover = Color3.fromRGB(40, 40, 40),
+    ButtonActive = Color3.fromRGB(0, 170, 100), 
+    ButtonDanger = Color3.fromRGB(170, 40, 40),
+    ButtonPlatform = Color3.fromRGB(150, 50, 200),
+    Text = Color3.fromRGB(220, 220, 220),
+    Outline = Color3.fromRGB(10, 10, 10)
+}
+
+-- === СИСТЕМА ЗВУКОВ ===
+local function PlaySound(id, pitch)
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. tostring(id)
+    sound.PlaybackSpeed = pitch or 1
+    sound.Volume = 1.5
+    sound.Parent = CoreGui
+    sound:Play()
+    Debris:AddItem(sound, 5)
+end
+
+-- --- GUI ИНТЕРФЕЙС ---
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SmartRaceClickGui"
+ScreenGui.Parent = CoreGui
+ScreenGui.DisplayOrder = 100
+ScreenGui.ResetOnSpawn = false
+
+-- --- GUI УВЕДОМЛЕНИЙ ---
+local NotifyGui = Instance.new("ScreenGui")
+NotifyGui.Name = "SmartRaceNotifyGui"
+NotifyGui.Parent = CoreGui
+NotifyGui.DisplayOrder = 101
+NotifyGui.ResetOnSpawn = false
+
+local NotificationContainer = Instance.new("Frame")
+NotificationContainer.Name = "NotificationContainer"
+NotificationContainer.Size = UDim2.new(1, -10, 1, -20)
+NotificationContainer.Position = UDim2.new(0, 5, 0, 10)
+NotificationContainer.BackgroundTransparency = 1
+NotificationContainer.Parent = NotifyGui
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = NotificationContainer
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+UIListLayout.Padding = UDim.new(0, 10)
+
+local function SendNotification(title, text, duration)
+    duration = duration or 5
+    PlaySound(103750838557977, 2)
+
+    local NotifFrame = Instance.new("Frame")
+    NotifFrame.Size = UDim2.new(1, 0, 0, 72)
+    NotifFrame.BackgroundColor3 = COLORS.Background
+    NotifFrame.BorderSizePixel = 0
+    NotifFrame.BackgroundTransparency = 1
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = COLORS.ButtonActive
+    Stroke.Thickness = 2
+    Stroke.Transparency = 1
+    Stroke.Parent = NotifFrame
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -10, 0, 26)
+    TitleLabel.Position = UDim2.new(0, 5, 0, 5)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = COLORS.ButtonActive
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextSize = 16
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.TextTransparency = 1
+    TitleLabel.Parent = NotifFrame
+
+    local DescLabel = Instance.new("TextLabel")
+    DescLabel.Size = UDim2.new(1, -10, 0, 36)
+    DescLabel.Position = UDim2.new(0, 5, 0, 31)
+    DescLabel.BackgroundTransparency = 1
+    DescLabel.Text = text
+    DescLabel.TextColor3 = COLORS.Text
+    DescLabel.Font = Enum.Font.Gotham
+    DescLabel.TextSize = 14
+    DescLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DescLabel.TextWrapped = true
+    DescLabel.TextTransparency = 1
+    DescLabel.Parent = NotifFrame
+
+    NotifFrame.Parent = NotificationContainer
+
+    TweenService:Create(NotifFrame, TweenInfo.new(0.5), {BackgroundTransparency = 0.1}):Play()
+    TweenService:Create(Stroke, TweenInfo.new(0.5), {Transparency = 0}):Play()
+    TweenService:Create(TitleLabel, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+    TweenService:Create(DescLabel, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+
+    task.spawn(function()
+        task.wait(duration)
+        if NotifFrame and NotifFrame.Parent then
+            local tw1 = TweenService:Create(NotifFrame, TweenInfo.new(0.5), {BackgroundTransparency = 1})
+            TweenService:Create(Stroke, TweenInfo.new(0.5), {Transparency = 1}):Play()
+            TweenService:Create(TitleLabel, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+            TweenService:Create(DescLabel, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+            tw1:Play()
+            tw1.Completed:Wait()
+            NotifFrame:Destroy()
+        end
+    end)
+end
+
+-- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ СОЗДАНИЯ UI ===
+local function createCategory(name, position)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0.5, -10, 0, 42)
+    Frame.Position = position
+    Frame.BackgroundColor3 = COLORS.Header
+    Frame.BorderSizePixel = 0
+    Frame.Active = true
+    Frame.Draggable = true 
+    Frame.Parent = ScreenGui
+
+    local Outline = Instance.new("UIStroke")
+    Outline.Color = COLORS.Outline
+    Outline.Thickness = 2
+    Outline.Parent = Frame
+
+    local HeaderText = Instance.new("TextLabel")
+    HeaderText.Size = UDim2.new(1, -10, 1, 0)
+    HeaderText.Position = UDim2.new(0, 10, 0, 0)
+    HeaderText.BackgroundTransparency = 1
+    HeaderText.Text = name
+    HeaderText.TextColor3 = COLORS.Text
+    HeaderText.Font = Enum.Font.GothamBold
+    HeaderText.TextSize = 17
+    HeaderText.TextXAlignment = Enum.TextXAlignment.Left
+    HeaderText.Parent = Frame
+
+    local ContentFrame = Instance.new("Frame")
+    ContentFrame.Size = UDim2.new(1, 0, 0, 0)
+    ContentFrame.Position = UDim2.new(0, 0, 1, 0)
+    ContentFrame.BackgroundColor3 = COLORS.Background
+    ContentFrame.BorderSizePixel = 0
+    ContentFrame.ClipsDescendants = true
+    ContentFrame.AutomaticSize = Enum.AutomaticSize.Y
+    ContentFrame.Parent = Frame
+
+    local ContentOutline = Instance.new("UIStroke")
+    ContentOutline.Color = COLORS.Outline
+    ContentOutline.Thickness = 2
+    ContentOutline.Parent = ContentFrame
+
+    local Layout = Instance.new("UIListLayout")
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = ContentFrame
+
+    local clickStartPos = nil
+    local btnConn1 = Frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton2 or input.UserInputType == Enum.UserInputType.Touch then
+            clickStartPos = input.Position
+        elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+            clickStartPos = input.Position
+        end
+    end)
+    table.insert(connections, btnConn1)
+
+    local btnConn2 = Frame.InputEnded:Connect(function(input)
+        if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and clickStartPos then
+            local distance = (input.Position - clickStartPos).Magnitude
+            if distance < 10 then
+                ContentFrame.Visible = not ContentFrame.Visible
+            end
+            clickStartPos = nil
+        end
+    end)
+    table.insert(connections, btnConn2)
+
+    return ContentFrame
+end
+
+local function createLabel(parent, text)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1, 0, 0, 32)
+    Frame.BackgroundColor3 = COLORS.ButtonNormal
+    Frame.BorderSizePixel = 0
+    Frame.Parent = parent
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -10, 1, 0)
+    Label.Position = UDim2.new(0, 5, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = COLORS.Text
+    Label.Font = Enum.Font.Gotham
+    Label.TextSize = 14
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
+
+    return Label
+end
+
+local function createToggle(parent, text, defaultState, callback)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, 0, 0, 44)
+    Button.BackgroundColor3 = defaultState and COLORS.ButtonActive or COLORS.ButtonNormal
+    Button.BorderSizePixel = 0
+    Button.Text = text
+    Button.TextColor3 = COLORS.Text
+    Button.Font = Enum.Font.Gotham
+    Button.TextSize = 15
+    Button.AutoButtonColor = false
+    Button.Parent = parent
+
+    local state = defaultState
+    Button.MouseEnter:Connect(function() if not state then Button.BackgroundColor3 = COLORS.ButtonHover end end)
+    Button.MouseLeave:Connect(function() Button.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal end)
+    Button.MouseButton1Click:Connect(function()
+        state = not state
+        Button.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonHover
+        if state then 
+            PlaySound(542332175, 1)
+        end
+        callback(state, Button)
+    end)
+    return Button
+end
+
+local function createAction(parent, text, callback, isDanger, customColor)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, 0, 0, 44)
+    Button.BackgroundColor3 = customColor or (isDanger and COLORS.ButtonDanger or COLORS.ButtonNormal)
+    Button.BorderSizePixel = 0
+    Button.Text = text
+    Button.TextColor3 = COLORS.Text
+    Button.Font = Enum.Font.Gotham
+    Button.TextSize = 15
+    Button.AutoButtonColor = false
+    Button.Parent = parent
+
+    Button.MouseEnter:Connect(function() 
+        if not isDanger and not customColor then Button.BackgroundColor3 = COLORS.ButtonHover end
+    end)
+    Button.MouseLeave:Connect(function() 
+        Button.BackgroundColor3 = customColor or (isDanger and COLORS.ButtonDanger or COLORS.ButtonNormal) 
+    end)
+    Button.MouseButton1Click:Connect(function()
+        if not isDanger and not customColor then Button.BackgroundColor3 = COLORS.ButtonActive end
+        PlaySound(542332175, 1)
+        task.spawn(function()
+            callback(Button)
+            task.wait(0.2)
+            if not isDanger and not customColor then Button.BackgroundColor3 = COLORS.ButtonHover end
+        end)
+    end)
+    return Button
+end
+
+local function createSlider(parent, prefixText, minVal, maxVal, defaultVal, decimals, callback)
+    decimals = decimals or 0
+    local SliderFrame = Instance.new("Frame")
+    SliderFrame.Size = UDim2.new(1, 0, 0, 58)
+    SliderFrame.BackgroundColor3 = COLORS.ButtonNormal
+    SliderFrame.BorderSizePixel = 0
+    SliderFrame.Parent = parent
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, 0, 0, 28)
+    Label.BackgroundTransparency = 1
+    Label.Text = prefixText .. string.format("%."..decimals.."f", defaultVal)
+    Label.TextColor3 = COLORS.Text
+    Label.Font = Enum.Font.Gotham
+    Label.TextSize = 15
+    Label.Parent = SliderFrame
+
+    local SliderBg = Instance.new("Frame")
+    SliderBg.Size = UDim2.new(0.85, 0, 0, 10)
+    SliderBg.Position = UDim2.new(0.075, 0, 0, 38)
+    SliderBg.BackgroundColor3 = COLORS.Background
+    SliderBg.BorderSizePixel = 0
+    SliderBg.Parent = SliderFrame
+
+    local SliderCorner = Instance.new("UICorner")
+    SliderCorner.CornerRadius = UDim.new(1, 0)
+    SliderCorner.Parent = SliderBg
+
+    local SliderFill = Instance.new("Frame")
+    SliderFill.Size = UDim2.new((defaultVal - minVal) / (maxVal - minVal), 0, 1, 0)
+    SliderFill.BackgroundColor3 = COLORS.ButtonActive
+    SliderFill.BorderSizePixel = 0
+    SliderFill.Parent = SliderBg
+
+    local FillCorner = Instance.new("UICorner")
+    FillCorner.CornerRadius = UDim.new(1, 0)
+    FillCorner.Parent = SliderFill
+
+    -- Невидимая зона касания — высокая, чтобы легко попасть пальцем
+    local SliderBtn = Instance.new("TextButton")
+    SliderBtn.Size = UDim2.new(1, 0, 1, 30)
+    SliderBtn.Position = UDim2.new(0, 0, 0, -15)
+    SliderBtn.BackgroundTransparency = 1
+    SliderBtn.Text = ""
+    SliderBtn.Parent = SliderBg
+
+    local dragging = false
+    local function updateSlider(inputX)
+        local sliderX = SliderBg.AbsolutePosition.X
+        local sliderWidth = SliderBg.AbsoluteSize.X
+        local percent = math.clamp((inputX - sliderX) / sliderWidth, 0, 1)
+        local newVal = minVal + (maxVal - minVal) * percent
+        if decimals == 0 then
+            newVal = math.floor(newVal)
+        else
+            local mult = 10^decimals
+            newVal = math.floor(newVal * mult + 0.5) / mult
+        end
+        Label.Text = prefixText .. string.format("%."..decimals.."f", newVal)
+        SliderFill.Size = UDim2.new(percent, 0, 1, 0)
+        callback(newVal)
+    end
+
+    SliderBtn.MouseButton1Down:Connect(function()
+        dragging = true
+        updateSlider(Players.LocalPlayer:GetMouse().X)
+    end)
+    SliderBtn.TouchLongPress:Connect(function(touches)
+        dragging = true
+    end)
+
+    local c1 = UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            updateSlider(input.Position.X)
+        elseif input.UserInputType == Enum.UserInputType.Touch then
+            updateSlider(input.Position.X)
+        end
+    end)
+    local c2 = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    -- Touch начало на кнопке
+    SliderBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            updateSlider(input.Position.X)
+        end
+    end)
+    table.insert(connections, c1)
+    table.insert(connections, c2)
+
+    return Label
+end
+
+-- === БИНДЫ ===
+local Binds = {
+    FastStop = { Key = Enum.KeyCode.Space, Enabled = false },
+    GoUp = { Key = Enum.KeyCode.U, Enabled = false },
+    GoDown = { Key = Enum.KeyCode.J, Enabled = false },
+    InstaBoost = { Key = Enum.KeyCode.G, Enabled = false },
+    ToggleSmartRace = { Key = Enum.KeyCode.Z, Enabled = false },
+    ToggleAutoCP = { Key = Enum.KeyCode.X, Enabled = false },
+    ToggleNoclip = { Key = Enum.KeyCode.C, Enabled = false }
+}
+local currentlyBinding = nil
+
+local function createKeybind(parent, text, bindId)
+    local BindFrame = Instance.new("Frame")
+    BindFrame.Size = UDim2.new(1, 0, 0, 44)
+    BindFrame.BackgroundColor3 = COLORS.ButtonNormal
+    BindFrame.BorderSizePixel = 0
+    BindFrame.Parent = parent
+
+    local ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Size = UDim2.new(0, 34, 0, 34)
+    ToggleBtn.Position = UDim2.new(0, 5, 0, 5)
+    ToggleBtn.BackgroundColor3 = COLORS.Background
+    ToggleBtn.BorderSizePixel = 0
+    ToggleBtn.Text = ""
+    ToggleBtn.AutoButtonColor = false
+    ToggleBtn.Parent = BindFrame
+
+    local function updateToggleUI()
+        ToggleBtn.BackgroundColor3 = Binds[bindId].Enabled and COLORS.ButtonActive or COLORS.ButtonDanger
+    end
+    updateToggleUI()
+
+    ToggleBtn.MouseButton1Click:Connect(function()
+        Binds[bindId].Enabled = not Binds[bindId].Enabled
+        if Binds[bindId].Enabled then PlaySound(542332175, 1) end
+        updateToggleUI()
+    end)
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -110, 1, 0)
+    Label.Position = UDim2.new(0, 45, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = COLORS.Text
+    Label.Font = Enum.Font.Gotham
+    Label.TextSize = 14
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = BindFrame
+
+    local KeyBtn = Instance.new("TextButton")
+    KeyBtn.Size = UDim2.new(0, 58, 0, 34)
+    KeyBtn.Position = UDim2.new(1, -63, 0, 5)
+    KeyBtn.BackgroundColor3 = COLORS.Header
+    KeyBtn.BorderSizePixel = 0
+    KeyBtn.Text = Binds[bindId].Key.Name
+    KeyBtn.TextColor3 = COLORS.ButtonActive
+    KeyBtn.Font = Enum.Font.GothamBold
+    KeyBtn.TextSize = 13
+    KeyBtn.Parent = BindFrame
+
+    Binds[bindId].Btn = KeyBtn
+
+    KeyBtn.MouseButton1Click:Connect(function()
+        KeyBtn.Text = "..."
+        currentlyBinding = bindId
+    end)
+end
+
+-- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ SmartRace ===
+local function getMyCar()
+    if workspace:FindFirstChild("Cars") then
+        for _, car in pairs(workspace.Cars:GetChildren()) do
+            local d = car:FindFirstChild("CurrentDriver")
+            if d and (d.Value == Players.LocalPlayer.Name or d.Value == Players.LocalPlayer or (d:IsA("ObjectValue") and d.Value == Players.LocalPlayer.Character)) then
+                return car
+            end
+        end
+    end
+    return nil
+end
+
+local function getRootPart()
+    local car = getMyCar()
+    if car then
+        return car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+    end
+    local char = Players.LocalPlayer.Character
+    if char then
+        return char:FindFirstChild("HumanoidRootPart")
+    end
+    return nil
+end
+
+function updateNoclip(state)
+    _G.NoclipEnabled = state
+    if state then
+        if not noclipConnection then
+            noclipConnection = RunService.Stepped:Connect(function()
+                local car = getMyCar()
+                if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
+                local char = Players.LocalPlayer.Character
+                if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
+            end)
+        end
+    else
+        if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
+        local char = Players.LocalPlayer.Character
+        if char then for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Name ~= "DoorMain" and part.Name ~= "Exhaust" and part.Name ~= "Main" and part.Name ~= "Stars" and part.Name ~= "Contrast" then part.CanCollide = true end end end
+        local car = getMyCar()
+        if car then for _, part in pairs(car:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end end
+    end
+end
+
+function setFreeze(state)
+    local char = Players.LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then hrp.Anchored = state end
+    end
+end
+
+-- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ DriftGlitch ===
+local function getCarInfo()
+    local char = Players.LocalPlayer.Character
+    if char and char:FindFirstChild("Humanoid") then
+        local humanoid = char.Humanoid
+        if humanoid.SeatPart and humanoid.SeatPart:IsA("VehicleSeat") then
+            local seat = humanoid.SeatPart
+            local carModel = seat:FindFirstAncestorOfClass("Model")
+            return (carModel and carModel.PrimaryPart or seat), carModel
+        end
+    end
+    return nil, nil
+end
+
+-- Ссылки на кнопки Drift для обновления UI
+local driftButtons = {}
+
+local function updateDriftUI()
+    if driftButtons.Toggle then
+        driftButtons.Toggle.BackgroundColor3 = _G.DriftGlitchActive and COLORS.ButtonActive or COLORS.ButtonNormal
+    end
+    if driftButtons.Platform then
+        driftButtons.Platform.BackgroundColor3 = _G.PlatformModeActive and COLORS.ButtonActive or COLORS.ButtonPlatform
+    end
+    if driftButtons.AutoDrift then
+        driftButtons.AutoDrift.BackgroundColor3 = _G.AutoDriftActive and COLORS.ButtonActive or COLORS.ButtonNormal
+        driftButtons.AutoDrift.Text = _G.AutoDriftActive and "AutoDrift ACTIVE [R]" or "AutoDrift [R]"
+    end
+    if driftButtons.AngleLabel then
+        driftButtons.AngleLabel.Text = string.format("Angle: %.1f° | Side: %s", _G.DriftAngle, _G.DriftSide == 1 and "Right" or "Left")
+    end
+end
+
+local function togglePlatform()
+    local root, carModel = getCarInfo()
+    if not root or not carModel then 
+        SendNotification("Drift Glitch", "Сядь в машину!", 3)
+        return 
+    end
+
+    _G.PlatformModeActive = not _G.PlatformModeActive
+
+    if _G.PlatformModeActive then
+        if platformFolder then platformFolder:Destroy() end
+
+        platformFolder = Instance.new("Folder")
+        platformFolder.Name = "DriftPlatformFolder"
+        platformFolder.Parent = workspace
+
+        local floor = Instance.new("Part")
+        floor.Name = "DriftFloor"
+        floor.Size = Vector3.new(6000, 12, 6000)
+        floor.Position = Vector3.new(0, PLATFORM_HEIGHT, 0)
+        floor.Anchored = true
+        floor.Transparency = 0.35
+        floor.Color = Color3.fromRGB(50, 50, 90)
+        floor.Material = Enum.Material.Neon
+        floor.Parent = platformFolder
+
+        savedCFrame = root.CFrame
+        carModel:PivotTo(CFrame.new(0, PLATFORM_HEIGHT + 15, 0))
+        SendNotification("Drift Glitch", "Платформа включена!", 3)
+    else
+        if platformFolder then
+            platformFolder:Destroy()
+            platformFolder = nil
+        end
+        if savedCFrame and root then
+            root.CFrame = savedCFrame
+        end
+        SendNotification("Drift Glitch", "Платформа отключена.", 3)
+    end
+
+    updateDriftUI()
+end
+
+-- === SAFE QUIT ===
+local function SafeQuit()
+    _G.SmartRaceEnabled = false
+    _G.AutoCheckpointEnabled = false
+    _G.AutoFlyEnabled = false
+    _G.NoclipEnabled = false
+    _G.PlayerFrozen = false
+    _G.SpeedBoostEnabled = false
+    _G.FarmPatchEnabled = false
+    _G.DriftGlitchActive = false
+    _G.PlatformModeActive = false
+    _G.AutoDriftActive = false
+
+    if platformFolder then platformFolder:Destroy() platformFolder = nil end
+
+    updateNoclip(false)
+    setFreeze(false)
+
+    local root = getRootPart()
+    if root then
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+
+    for _, conn in ipairs(connections) do
+        if conn and conn.Connected then
+            conn:Disconnect()
+        end
+    end
+    table.clear(connections)
+
+    if ScreenGui then ScreenGui:Destroy() end
+    if NotifyGui then NotifyGui:Destroy() end
+    print("SmartRace + DriftGlitch Unloaded Safely!")
+end
+
+-- === СОЗДАНИЕ КАТЕГОРИЙ И КНОПОК ===
+local buttons = {} 
+
+-- Колонка 1 (левая): Race, Drift, Bindables, Notifications
+-- Колонка 2 (правая): Player, Server, Info
+local RaceCategory     = createCategory("Race",          UDim2.new(0,   5, 0,  5))
+
+function disableAllModes(exclude)
+    if exclude ~= "SmartRace" then _G.SmartRaceEnabled = false; buttons.SmartRace.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "AutoCheckpoint" then _G.AutoCheckpointEnabled = false; buttons.AutoCP.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "AutoFly" then _G.AutoFlyEnabled = false; buttons.AutoFly.BackgroundColor3 = COLORS.ButtonNormal end
+    if exclude ~= "FarmPatch" then _G.FarmPatchEnabled = false; if buttons.FarmPatch then buttons.FarmPatch.BackgroundColor3 = COLORS.ButtonNormal end end
+end
+
+local function toggleSmartRaceLogic(state)
+    _G.SmartRaceEnabled = state
+    buttons.SmartRace.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
+    if state then
+        disableAllModes("SmartRace")
+        task.spawn(startSmartRaceLoop)
+    else
+        updateNoclip(false)
+        local char = Players.LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then char.HumanoidRootPart.Anchored = false end
+    end
+end
+
+local function toggleAutoCPLogic(state)
+    _G.AutoCheckpointEnabled = state
+    buttons.AutoCP.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
+    if state then
+        disableAllModes("AutoCheckpoint")
+        task.spawn(startAutoCPLoop)
+    end
+end
+
+local function toggleNoclipLogic(state)
+    updateNoclip(state)
+    if buttons.Noclip then
+        buttons.Noclip.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
+    end
+end
+
+buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, toggleSmartRaceLogic)
+buttons.AutoCP = createToggle(RaceCategory, "Auto Checkpoint", false, toggleAutoCPLogic)
+buttons.AutoFly = createToggle(RaceCategory, "Auto Fly", false, function(state)
+    _G.AutoFlyEnabled = state
+    if state then
+        disableAllModes("AutoFly")
+        task.spawn(startAutoFlyLoop)
+    end
+end)
+
+createSlider(RaceCategory, "Fly Speed: ", MIN_SPEED, MAX_SPEED, FLY_SPEED, 0, function(val) FLY_SPEED = val end)
+
+buttons.FarmPatch = createToggle(RaceCategory, "FarmPatch", false, function(state)
+    _G.FarmPatchEnabled = state
+    buttons.FarmPatch.BackgroundColor3 = state and COLORS.ButtonActive or COLORS.ButtonNormal
+    if state then
+        disableAllModes("FarmPatch")
+        updateNoclip(true)
+        task.spawn(startFarmPatchLoop)
+    else
+        updateNoclip(false)
+        local car = getMyCar()
+        if car and car.PrimaryPart then
+            car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+end)
+
+createSlider(RaceCategory, "FarmPatch Height: ", MIN_AIRFARM_HEIGHT, MAX_AIRFARM_HEIGHT, AIRFARM_HEIGHT, 0, function(val) AIRFARM_HEIGHT = val end)
+createSlider(RaceCategory, "FarmPatch Speed: ", MIN_AIRFARM_SPEED, MAX_AIRFARM_SPEED, AIRFARM_SPEED, 0, function(val) AIRFARM_SPEED = val end)
+createSlider(RaceCategory, "Wave Amplitude: ", MIN_AIRFARM_AMP, MAX_AIRFARM_AMP, AIRFARM_WAVE_AMP, 0, function(val) AIRFARM_WAVE_AMP = val end)
+createSlider(RaceCategory, "Wave Frequency: ", MIN_AIRFARM_FREQ, MAX_AIRFARM_FREQ, AIRFARM_WAVE_FREQ, 2, function(val) AIRFARM_WAVE_FREQ = val end)
+createSlider(RaceCategory, "Burst Time (s): ", MIN_AIRFARM_BURST, MAX_AIRFARM_BURST, AIRFARM_BURST_TIME, 1, function(val) AIRFARM_BURST_TIME = val end)
+createSlider(RaceCategory, "Stop Time (s): ", MIN_AIRFARM_STOP, MAX_AIRFARM_STOP, AIRFARM_STOP_TIME, 1, function(val) AIRFARM_STOP_TIME = val end)
+createSlider(RaceCategory, "Max Dist (TP): ", MIN_AIRFARM_DIST, MAX_AIRFARM_DIST, AIRFARM_MAX_DIST, 0, function(val) AIRFARM_MAX_DIST = val end)
+
+-- 2. PLAYER
+local PlayerCategory = createCategory("Player", UDim2.new(0.5, 5, 0, 5))
+
+buttons.Noclip = createToggle(PlayerCategory, "Noclip", false, toggleNoclipLogic)
+createToggle(PlayerCategory, "Freeze Player", false, function(state) _G.PlayerFrozen = state; setFreeze(state) end)
+createToggle(PlayerCategory, "SpeedBoost (Hold W)", false, function(state) _G.SpeedBoostEnabled = state end)
+
+createSlider(PlayerCategory, "Speed Multiplier: ", MIN_MULT, MAX_MULT, SPEED_MULTIPLIER, 3, function(val) SPEED_MULTIPLIER = val end)
+createSlider(PlayerCategory, "Max Boost Speed: ", MIN_MAX_SPEED, MAX_MAX_SPEED, MAX_BOOST_SPEED, 0, function(val) MAX_BOOST_SPEED = val end)
+
+-- 3. DRIFT
+local DriftCategory = createCategory("Drift", UDim2.new(0, 5, 0, 52))
+
+driftButtons.AngleLabel = createLabel(DriftCategory, string.format("Angle: %.1f° | Side: Right", _G.DriftAngle))
+
+driftButtons.Toggle = createAction(DriftCategory, "Toggle Glitch [Z]", function(btn)
+    _G.DriftGlitchActive = not _G.DriftGlitchActive
+    updateDriftUI()
+end)
+
+driftButtons.Platform = createAction(DriftCategory, "Platform Mode [P]", function(btn)
+    togglePlatform()
+end, false, COLORS.ButtonPlatform)
+
+driftButtons.AutoDrift = createAction(DriftCategory, "AutoDrift [R]", function(btn)
+    _G.AutoDriftActive = not _G.AutoDriftActive
+    updateDriftUI()
+end)
+
+createAction(DriftCategory, "Side: Right → Left [C]", function(btn)
+    _G.DriftSide = _G.DriftSide * -1
+    btn.Text = _G.DriftSide == 1 and "Side: Right → Left [C]" or "Side: Left → Right [C]"
+    updateDriftUI()
+end)
+
+createSlider(DriftCategory, "Drift Angle: ", MIN_DRIFT_ANGLE, MAX_DRIFT_ANGLE, _G.DriftAngle, 0, function(val)
+    _G.DriftAngle = val
+    updateDriftUI()
+end)
+
+-- 4. SERVER
+local ServerCategory = createCategory("Server", UDim2.new(0.5, 5, 0, 52))
+createAction(ServerCategory, "ServerSide AFK", function(btn)
+    btn.Text = "Setting AFK..."
+    game:GetService("ReplicatedStorage").Systems.Social.PlayerToggledAFK:FireServer("Ping")
+    task.wait(0.5)
+    btn.Text = "ServerSide AFK"
+end)
+createAction(ServerCategory, "Shop Reset (REPORTED)", function(btn)
+    btn.Text = "Resetting... 0/1"
+    game:GetService("ReplicatedStorage").Systems.Shop.ResetShopData:InvokeServer("Ping")
+    task.wait(0.5)
+    btn.Text = "Shop Reset (REPORTED)"
+end)
+createAction(ServerCategory, "Server Exit Car", function(btn)
+    btn.Text = "Exiting car..."
+    game:GetService("ReplicatedStorage").Systems.Cars.ExitCar:InvokeServer("Ping")
+    task.wait(0.5)
+    btn.Text = "Server Exit Car"
+end)
+createAction(ServerCategory, "Safe Quit (Unload)", function() SafeQuit() end, true)
+
+-- 5. INFO 
+local InfoCategory = createCategory("Info", UDim2.new(0.5, 5, 0, 99))
+
+local SwitcherFrame = Instance.new("Frame")
+SwitcherFrame.Size = UDim2.new(1, 0, 0, 30)
+SwitcherFrame.BackgroundColor3 = COLORS.Header
+SwitcherFrame.BorderSizePixel = 0
+SwitcherFrame.Parent = InfoCategory
+
+local PrevBtn = Instance.new("TextButton")
+PrevBtn.Size = UDim2.new(0, 30, 1, 0)
+PrevBtn.BackgroundColor3 = COLORS.Header
+PrevBtn.BorderSizePixel = 0
+PrevBtn.Text = "<"
+PrevBtn.TextColor3 = COLORS.ButtonActive
+PrevBtn.Font = Enum.Font.GothamBold
+PrevBtn.TextSize = 16
+PrevBtn.Parent = SwitcherFrame
+
+local NextBtn = Instance.new("TextButton")
+NextBtn.Size = UDim2.new(0, 30, 1, 0)
+NextBtn.Position = UDim2.new(1, -30, 0, 0)
+NextBtn.BackgroundColor3 = COLORS.Header
+NextBtn.BorderSizePixel = 0
+NextBtn.Text = ">"
+NextBtn.TextColor3 = COLORS.ButtonActive
+NextBtn.Font = Enum.Font.GothamBold
+NextBtn.TextSize = 16
+NextBtn.Parent = SwitcherFrame
+
+local TargetNameLabel = Instance.new("TextLabel")
+TargetNameLabel.Size = UDim2.new(1, -60, 1, 0)
+TargetNameLabel.Position = UDim2.new(0, 30, 0, 0)
+TargetNameLabel.BackgroundTransparency = 1
+TargetNameLabel.Text = Players.LocalPlayer.Name
+TargetNameLabel.TextColor3 = COLORS.Text
+TargetNameLabel.Font = Enum.Font.GothamBold
+TargetNameLabel.TextSize = 12
+TargetNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+TargetNameLabel.Parent = SwitcherFrame
+
+local moneyLabel = createLabel(InfoCategory, "Money: N/A")
+local levelLabel = createLabel(InfoCategory, "Level: N/A")
+local airLabel = createLabel(InfoCategory, "Air Score: N/A")
+local driftLabel = createLabel(InfoCategory, "Drift Score: N/A")
+local auctionLabel = createLabel(InfoCategory, "Auction Earned: N/A")
+local spentLabel = createLabel(InfoCategory, "Spent: N/A")
+local clubLabel = createLabel(InfoCategory, "Club: N/A")
+
+local targetPlayer = Players.LocalPlayer
+local function changePlayer(step)
+    local plrs = Players:GetPlayers()
+    if #plrs == 0 then return end
+    local currentIndex = 1
+    for i, p in ipairs(plrs) do if p == targetPlayer then currentIndex = i break end end
+    currentIndex = currentIndex + step
+    if currentIndex > #plrs then currentIndex = 1 end
+    if currentIndex < 1 then currentIndex = #plrs end
+    targetPlayer = plrs[currentIndex]
+    TargetNameLabel.Text = targetPlayer.Name
+    
+    moneyLabel.Text = "Money: Loading..."
+    levelLabel.Text = "Level: Loading..."
+    airLabel.Text = "Air Score: Loading..."
+    driftLabel.Text = "Drift Score: Loading..."
+    auctionLabel.Text = "Auction Earned: Loading..."
+    spentLabel.Text = "Spent: Loading..."
+    clubLabel.Text = "Club: Loading..."
+end
+
+PrevBtn.MouseButton1Click:Connect(function() changePlayer(-1) end)
+NextBtn.MouseButton1Click:Connect(function() changePlayer(1) end)
+
+task.spawn(function()
+    local repStorage = game:GetService("ReplicatedStorage")
+    while task.wait(1) do
+        if not ScreenGui.Parent then break end
+        if not targetPlayer or not targetPlayer.Parent then
+            targetPlayer = Players.LocalPlayer
+            TargetNameLabel.Text = targetPlayer.Name
+        end
+        local pName = targetPlayer.Name
+        local leaderstats = targetPlayer:FindFirstChild("leaderstats")
+        if leaderstats then
+            local cash = leaderstats:FindFirstChild("Cash")
+            if cash then moneyLabel.Text = "Money: " .. tostring(cash.Value) else moneyLabel.Text = "Money: N/A" end
+            local level = leaderstats:FindFirstChild("Level")
+            if level then 
+                local lvlVal = tonumber(level.Value) or 0
+                local extraText = lvlVal > 10 and " (> 10)" or " (<= 10)"
+                levelLabel.Text = "Level: " .. tostring(lvlVal) .. extraText
+            else levelLabel.Text = "Level: N/A" end
+        else
+            moneyLabel.Text = "Money: N/A"; levelLabel.Text = "Level: N/A"
+        end
+
+        local playerDataFolder = repStorage:FindFirstChild("PlayerData")
+        if playerDataFolder then
+            local myData = playerDataFolder:FindFirstChild(pName)
+            if myData then
+                local stats = myData:FindFirstChild("Stats")
+                if stats then
+                    local air = stats:FindFirstChild("AirScore")
+                    if air then airLabel.Text = "Air Score: " .. tostring(air.Value) else airLabel.Text = "Air Score: N/A" end
+                    local drift = stats:FindFirstChild("DriftScore")
+                    if drift then driftLabel.Text = "Drift Score: " .. tostring(drift.Value) else driftLabel.Text = "Drift Score: N/A" end
+                    local auction = stats:FindFirstChild("AuctionEarnings")
+                    if auction then auctionLabel.Text = "Auction Earned: " .. tostring(auction.Value) else auctionLabel.Text = "Auction Earned: N/A" end
+                    local spent = stats:FindFirstChild("SpentCash")
+                    if spent then spentLabel.Text = "Spent: " .. tostring(spent.Value) else spentLabel.Text = "Spent: N/A" end
+                else
+                    airLabel.Text = "Air Score: N/A"; driftLabel.Text = "Drift Score: N/A"; auctionLabel.Text = "Auction Earned: N/A"; spentLabel.Text = "Spent: N/A"
+                end
+                local club = myData:FindFirstChild("ClubTag")
+                if club then clubLabel.Text = "Club: " .. tostring(club.Value) else clubLabel.Text = "Club: N/A" end
+            else
+                airLabel.Text = "Air Score: N/A"; driftLabel.Text = "Drift Score: N/A"; auctionLabel.Text = "Auction Earned: N/A"; spentLabel.Text = "Spent: N/A"; clubLabel.Text = "Club: N/A"
+            end
+        end
+    end
+end)
+
+-- 6. BINDABLES
+local BindsCategory = createCategory("Bindables", UDim2.new(0, 5, 0, 99))
+
+createKeybind(BindsCategory, "Fast Stop", "FastStop")
+createKeybind(BindsCategory, "Go Up", "GoUp")
+createKeybind(BindsCategory, "Go Down", "GoDown")
+createKeybind(BindsCategory, "Momental Boost", "InstaBoost")
+createKeybind(BindsCategory, "Toggle SmartRace", "ToggleSmartRace")
+createKeybind(BindsCategory, "Toggle AutoCP", "ToggleAutoCP")
+createKeybind(BindsCategory, "Toggle Noclip", "ToggleNoclip")
+
+createSlider(BindsCategory, "Shift Amount: ", 1, 100, SHIFT_AMOUNT, 0, function(val) SHIFT_AMOUNT = val end)
+createSlider(BindsCategory, "Insta Boost: ", 100, 5000, INSTA_BOOST_SPEED, 0, function(val) INSTA_BOOST_SPEED = val end)
+
+-- 7. NOTIFICATIONS
+local NotifCategory = createCategory("Notifications", UDim2.new(0.5, 5, 0, 146))
+
+createToggle(NotifCategory, "Notify Winner", _G.NotifyWinner, function(state) _G.NotifyWinner = state end)
+createToggle(NotifCategory, "Notify Leaderboard", _G.NotifyLeaderboard, function(state) _G.NotifyLeaderboard = state end)
+createToggle(NotifCategory, "Notify SpeedTrap", _G.NotifySpeedTrap, function(state) _G.NotifySpeedTrap = state end)
+createToggle(NotifCategory, "Notify Guild", _G.NotifyGuild, function(state) _G.NotifyGuild = state end)
+
+-- === ОБРАБОТКА ИВЕНТОВ УВЕДОМЛЕНИЙ ===
+local RepStorage = game:GetService("ReplicatedStorage")
+local Systems = RepStorage:WaitForChild("Systems", 5)
+
+if Systems then
+    local R_Winner = Systems:FindFirstChild("Races") and Systems.Races:FindFirstChild("BroadcastWinner")
+    if R_Winner then
+        table.insert(connections, R_Winner.OnClientEvent:Connect(function(plr, time, raceLoc)
+            if _G.NotifyWinner then
+                local pName = typeof(plr) == "Instance" and plr.Name or tostring(plr)
+                local rName = typeof(raceLoc) == "Instance" and raceLoc.Name or tostring(raceLoc)
+                local formatTime = string.format("%.2f", tonumber(time) or 0)
+                SendNotification("Race Winner!", pName.." won on "..rName.."\nTime: "..formatTime.."s", 6)
+            end
+        end))
+    end
+
+    local R_Leaderboard = Systems:FindFirstChild("DailyRaces") and Systems.DailyRaces:FindFirstChild("LeaderboardUpdated")
+    if R_Leaderboard then
+        table.insert(connections, R_Leaderboard.OnClientEvent:Connect(function(...)
+            if _G.NotifyLeaderboard then
+                SendNotification("Leaderboard", "Daily Races Leaderboard has been updated!", 5)
+                print("[SmartRace - LeaderboardUpdated Info]")
+                local args = {...}
+                for i, v in ipairs(args) do print("Arg " .. tostring(i) .. ":", v) end
+                print("-----------------------------------")
+            end
+        end))
+    end
+
+    local R_SpeedTrap = Systems:FindFirstChild("Objects") and Systems.Objects:FindFirstChild("Members") and Systems.Objects.Members:FindFirstChild("SpeedTrap") and Systems.Objects.Members.SpeedTrap:FindFirstChild("CameraSnapped")
+    if R_SpeedTrap then
+        table.insert(connections, R_SpeedTrap.OnClientEvent:Connect(function(...)
+            if _G.NotifySpeedTrap then SendNotification("Speed Trap", "Camera Snapped!", 4) end
+        end))
+    end
+
+    local R_Guild = Systems:FindFirstChild("Guilds") and Systems.Guilds:FindFirstChild("Update")
+    if R_Guild then
+        table.insert(connections, R_Guild.OnClientEvent:Connect(function(data)
+            if _G.NotifyGuild then
+                SendNotification("Club Updated", "Guild data was updated! Check Console (F9)", 5)
+                print("[SmartRace - GuildUpdate Info]")
+                if type(data) == "table" then
+                    print("CanMembersInvite:", tostring(data.CanMembersInvite))
+                    print("PublicallyJoinable:", tostring(data.PublicallyJoinable))
+                    print("Owner (UserID):", tostring(data.Owner))
+                    print("Members:")
+                    if type(data.Members) == "table" then
+                        for k, v in pairs(data.Members) do print("  ["..tostring(k).."] = ", v) end
+                    else
+                        print("  (Field 'Members' is not a table)")
+                    end
+                else
+                    print("Data:", data)
+                end
+                print("-----------------------------------")
+            end
+        end))
+    end
+end
+
+-- === ФУНКЦИИ ПЕРЕМЕЩЕНИЯ И ЦИКЛЫ SmartRace ===
+local function isBlue(c)
+    if not c then return false end
+    return math.abs(c.R*255 - TARGET_BLUE.R*255) <= TOLERANCE and math.abs(c.G*255 - TARGET_BLUE.G*255) <= TOLERANCE and math.abs(c.B*255 - TARGET_BLUE.B*255) <= TOLERANCE
+end
+
+local function isGreen(c)
+    if not c then return false end
+    if c.G * 255 > 200 and c.R * 255 < 100 then return true end
+    return math.abs(c.R*255 - TARGET_GREEN.R*255) <= TOLERANCE and math.abs(c.G*255 - TARGET_GREEN.G*255) <= TOLERANCE and math.abs(c.B*255 - TARGET_GREEN.B*255) <= TOLERANCE
+end
+
+local function findBestCheckpoint()
+    local blueTarget, greenTarget = nil, nil
+    if workspace:FindFirstChild("Races") then
+        for _, race in pairs(workspace.Races:GetChildren()) do
+            local cpFolder = race:FindFirstChild("Checkpoints")
+            if cpFolder then
+                for _, cp in pairs(cpFolder:GetChildren()) do
+                    local inner = cp:FindFirstChild("Inner")
+                    if inner then
+                        local b, e = inner:FindFirstChild("Base"), inner:FindFirstChild("Expand")
+                        local function getCol(o) return (o:IsA("Part") or o:IsA("MeshPart")) and o.Color or o.Color3 end
+                        local colorB, colorE = b and getCol(b), e and getCol(e)
+                        if isBlue(colorB) or isBlue(colorE) then blueTarget = inner break end
+                        if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then greenTarget = inner end
+                    end
+                end
+            end
+            if blueTarget then break end
+        end
+    end
+    return blueTarget or greenTarget
+end
+
+local function flyTo(car, targetPart)
+    local root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+    if not root then return end
+    local targetPos = targetPart.Position + Vector3.new(0, DEFAULT_HEIGHT, 0)
+    local direction = (targetPos - root.Position)
+    if direction.Magnitude > 5 then
+        root.AssemblyLinearVelocity = direction.Unit * FLY_SPEED
+        root.CFrame = CFrame.lookAt(root.Position, Vector3.new(targetPart.Position.X, root.Position.Y, targetPart.Position.Z))
+    else
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+end
+
+function startSmartRaceLoop()
+    while _G.SmartRaceEnabled do
+        local target = findBestCheckpoint()
+        local char = Players.LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if not target then
+            if hrp then
+                if gobutton and gobutton.Visible == true and _G.SmartRaceTPd == false then
+                    _G.SmartRaceTPd = true
+                    VirtualInputManager:SendMouseButtonEvent(gobutx, gobuty, 0, true, game, 1)
+                    task.wait(0.1)
+                    VirtualInputManager:SendMouseButtonEvent(gobutx, gobuty, 0, false, game, 1)
+                end
+                hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
+            end
+            updateNoclip(false)
+            task.wait(0.1)
+        else
+            if hrp then hrp.Anchored = false end
+            for i = 1, 70 do if not _G.SmartRaceEnabled then break end task.wait(0.1) end
+            if not _G.SmartRaceEnabled then break end
+            updateNoclip(true)
+            local missingTime = 0 
+            while _G.SmartRaceEnabled do
+                target = findBestCheckpoint()
+                if target then
+                    missingTime = 0 
+                    local myCar = getMyCar()
+                    if myCar then flyTo(myCar, target) end
+                else
+                    local dt = task.wait()
+                    missingTime = missingTime + dt
+                    if missingTime > 2 then break end 
+                    local myCar = getMyCar()
+                    if myCar and myCar.PrimaryPart then myCar.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end
+                    _G.SmartRaceTPd = false
+                    continue
+                end
+                task.wait()
+            end
+        end
+        task.wait()
+    end
+    updateNoclip(false)
+end
+
+function startAutoCPLoop()
+    while _G.AutoCheckpointEnabled do
+        local target = findBestCheckpoint()
+        local car = getMyCar()
+        if target and car then flyTo(car, target)
+        elseif car and car.PrimaryPart then car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end
+        task.wait()
+    end
+end
+
+function startFarmPatchLoop()
+    updateNoclip(true)
+
+    local t          = 0     -- таймер синуса, идёт только во время burst
+    local phaseTime  = 0     -- таймер текущей фазы
+    local isBursting = true  -- true = едем, false = стоим
+    local xSpeed     = 0     -- текущая горизонтальная скорость (нарастает/гасится плавно)
+
+    while _G.FarmPatchEnabled do
+        local dt = task.wait()
+        phaseTime = phaseTime + dt
+
+        -- Переключение фаз
+        if isBursting and phaseTime >= AIRFARM_BURST_TIME then
+            isBursting = false
+            phaseTime  = 0
+        elseif not isBursting and phaseTime >= AIRFARM_STOP_TIME then
+            isBursting = true
+            phaseTime  = 0
+        end
+
+        local car = getMyCar()
+        if not car then continue end
+
+        local root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+        if not root then continue end
+
+        local pos = root.Position
+
+        -- Проверка дистанции от центра по X и Z, если улетел — телепорт на нули
+        local flatDist = Vector3.new(pos.X, 0, pos.Z).Magnitude
+        if flatDist > AIRFARM_MAX_DIST then
+            local resetY = (_G.PlatformModeActive and platformFolder)
+                           and (PLATFORM_HEIGHT + 15)
+                           or  AIRFARM_HEIGHT
+            -- Используем PivotTo чтобы вся модель машины переместилась целиком
+            car:PivotTo(CFrame.new(0, resetY, 0))
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            -- Сбрасываем фазу — начинаем заново со стопа, чтобы не рвануть сразу
+            isBursting = false
+            phaseTime  = 0
+            xSpeed     = 0
+            t          = 0
+            continue
+        end
+
+        local yVel = 0
+
+        if isBursting then
+            -- Синус работает только во время движения
+            t = t + dt
+
+            local targetY   = AIRFARM_HEIGHT + math.sin(t * AIRFARM_WAVE_FREQ * math.pi * 2) * AIRFARM_WAVE_AMP
+            local idealYVel = AIRFARM_WAVE_AMP * AIRFARM_WAVE_FREQ * math.pi * 2
+                              * math.cos(t * AIRFARM_WAVE_FREQ * math.pi * 2)
+            local yDiff = targetY - pos.Y
+            yVel = math.clamp(idealYVel + yDiff * 4, -AIRFARM_SPEED, AIRFARM_SPEED)
+
+            local rampDur = math.max(AIRFARM_STOP_TIME * 0.6, 0.2)
+            local ramp    = math.min(phaseTime / rampDur, 1)
+            xSpeed = AIRFARM_SPEED * ramp
+
+            local lookTarget = Vector3.new(pos.X + 10, pos.Y + yVel * 0.1, pos.Z)
+            root.CFrame = CFrame.lookAt(pos, lookTarget)
+
+        else
+            -- СТОП: горизонталь гасим за 0.25 сек
+            local brakeDur = 0.25
+            local brake    = math.max(1 - phaseTime / brakeDur, 0)
+            xSpeed = AIRFARM_SPEED * brake
+
+            -- Прижимаемся к платформе или базовой высоте
+            local snapY
+            if _G.PlatformModeActive and platformFolder then
+                snapY = PLATFORM_HEIGHT + 14
+            else
+                snapY = AIRFARM_HEIGHT
+            end
+
+            local yDiff = snapY - pos.Y
+            yVel = math.clamp(yDiff * 6, -AIRFARM_SPEED, AIRFARM_SPEED)
+
+            local lookTarget = Vector3.new(pos.X + 1, pos.Y + yVel * 0.05, pos.Z)
+            root.CFrame = CFrame.lookAt(pos, lookTarget)
+        end
+
+        root.AssemblyLinearVelocity = Vector3.new(xSpeed, yVel, 0)
+    end
+
+    -- Останавливаем при выключении
+    updateNoclip(false)
+    local car = getMyCar()
+    if car then
+        local root = car.PrimaryPart or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
+        if root then root.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
+    end
+end
+
+function startAutoFlyLoop()
+    local char = Players.LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local startCF = hrp and hrp.CFrame or WAITING_CFRAME
+
+    while _G.AutoFlyEnabled do
+        char = Players.LocalPlayer.Character
+        hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            hrp.CFrame = startCF
+            task.wait(0.2) 
+
+            if _G.AutoFlyEnabled then
+                hrp.AssemblyLinearVelocity = Vector3.new(0, FLY_SPEED, 0)
+                task.wait(1.5)
+            end
+            
+            if _G.AutoFlyEnabled and hrp then
+                hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                task.wait(0.5) 
+            end
+        end
+        task.wait()
+    end
+
+    char = Players.LocalPlayer.Character
+    hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.CFrame = startCF
+    end
+end
+
+-- === DRIFT GLITCH ГЛАВНЫЙ ЦИКЛ ===
+table.insert(connections, RunService.Stepped:Connect(function()
+    if not _G.DriftGlitchActive then return end
+
+    local root, carModel = getCarInfo()
+    if not root or not carModel then return end
+
+    local velocity = root.AssemblyLinearVelocity
+    local flatVelocity = Vector3.new(velocity.X, 0, velocity.Z)
+    local speed = flatVelocity.Magnitude
+
+    if speed < DRIFT_MIN_SPEED then return end
+
+    local look = root.CFrame.LookVector
+    local lookFlat = Vector3.new(look.X, 0, look.Z).Unit
+    local directionMult = lookFlat:Dot(flatVelocity.Unit) < 0 and -1 or 1
+
+    local targetAngle = math.rad(_G.DriftAngle * _G.DriftSide)
+    local rotatedLook = (CFrame.Angles(0, targetAngle, 0) * lookFlat) * directionMult
+
+    local boostSpeed = math.max(speed, 220)
+    local targetVelocity = rotatedLook * boostSpeed
+
+    local driftVelocity = flatVelocity:Lerp(targetVelocity, 0.16)
+
+    root.AssemblyLinearVelocity = Vector3.new(
+        driftVelocity.X * 0.82 + flatVelocity.X * 0.18,
+        velocity.Y,
+        driftVelocity.Z * 0.82 + flatVelocity.Z * 0.18
+    )
+
+    local angVel = root.AssemblyAngularVelocity
+    root.AssemblyAngularVelocity = Vector3.new(
+        angVel.X * 0.12,
+        angVel.Y * ANTI_SPIN,
+        angVel.Z * 0.12
+    )
+
+    -- Прижатие к земле / платформе
+    if _G.PlatformModeActive and platformFolder then
+        local pos = root.Position
+        local height = pos.Y
+        local horizontalDist = Vector3.new(pos.X, 0, pos.Z).Magnitude
+
+        if height > PLATFORM_HEIGHT + 8 then
+            root.AssemblyLinearVelocity -= Vector3.new(0, DOWN_FORCE, 0)
+        end
+
+        if height < TARGET_HEIGHT + 6 then
+            root.AssemblyLinearVelocity += Vector3.new(0, ANTI_FALL_FORCE, 0)
+        end
+
+        if horizontalDist > 1950 or height < PLATFORM_HEIGHT - 40 then
+            carModel:PivotTo(CFrame.new(0, PLATFORM_HEIGHT + 15, 0) * CFrame.Angles(0, math.rad(math.random(-40,40)), 0))
+            root.AssemblyLinearVelocity = Vector3.new(0, 5, 0)
+        end
+    end
+end))
+
+-- === ЛОГИКА SPEED BOOST ===
+table.insert(connections, RunService.Heartbeat:Connect(function(deltaTime)
+    if _G.SpeedBoostEnabled and UserInputService:IsKeyDown(Enum.KeyCode.W) then
+        local root = getRootPart()
+        
+        if root then
+            local raycastParams = RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {root.Parent} 
+            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+            local rayDirection = Vector3.new(0, -6, 0)
+            local rayResult = workspace:Raycast(root.Position, rayDirection, raycastParams)
+
+            if rayResult then
+                local currentVelocity = root.AssemblyLinearVelocity
+                local lookVector = root.CFrame.LookVector
+                local currentForwardSpeed = currentVelocity:Dot(lookVector)
+                
+                if currentForwardSpeed > 5 then
+                    local frameMultiplier = math.pow(SPEED_MULTIPLIER, deltaTime * 60)
+                    local newForwardSpeed = currentForwardSpeed * frameMultiplier
+                    newForwardSpeed = math.min(newForwardSpeed, MAX_BOOST_SPEED)
+                    local boostVelocity = lookVector * newForwardSpeed
+                    root.AssemblyLinearVelocity = Vector3.new(boostVelocity.X, currentVelocity.Y, boostVelocity.Z)
+                end
+            end
+        end
+    end
+end))
+
+table.insert(connections, Players.LocalPlayer.CharacterAdded:Connect(function(char)
+    if _G.PlayerFrozen then
+        local hrp = char:WaitForChild("HumanoidRootPart", 5)
+        if hrp then hrp.Anchored = true end
+    end
+end))
+
+-- === ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ВВОДА ===
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if currentlyBinding then
+        if input.KeyCode == Enum.KeyCode.Escape then
+            currentlyBinding = nil
+            return
+        end
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            Binds[currentlyBinding].Key = input.KeyCode
+            Binds[currentlyBinding].Btn.Text = input.KeyCode.Name
+            currentlyBinding = nil
+        end
+        return
+    end
+
+    -- Скрытие/Показ GUI
+    if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+        if ScreenGui then ScreenGui.Enabled = not ScreenGui.Enabled end
+        return
+    end
+
+    if gameProcessed then return end 
+
+    local keyCode = input.KeyCode
+
+    -- SmartRace бинды
+    if Binds.FastStop.Enabled and keyCode == Binds.FastStop.Key then
+        local root = getRootPart()
+        if root then
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+
+    if Binds.GoUp.Enabled and keyCode == Binds.GoUp.Key then
+        local root = getRootPart()
+        if root then root.CFrame = root.CFrame + Vector3.new(0, SHIFT_AMOUNT, 0) end
+    end
+
+    if Binds.GoDown.Enabled and keyCode == Binds.GoDown.Key then
+        local root = getRootPart()
+        if root then root.CFrame = root.CFrame - Vector3.new(0, SHIFT_AMOUNT, 0) end
+    end
+
+    if Binds.InstaBoost.Enabled and keyCode == Binds.InstaBoost.Key then
+        local root = getRootPart()
+        if root then root.AssemblyLinearVelocity = root.CFrame.LookVector * INSTA_BOOST_SPEED end
+    end
+
+    if Binds.ToggleSmartRace.Enabled and keyCode == Binds.ToggleSmartRace.Key then
+        local newState = not _G.SmartRaceEnabled
+        if newState then PlaySound(542332175, 1) end
+        toggleSmartRaceLogic(newState)
+    end
+
+    if Binds.ToggleAutoCP.Enabled and keyCode == Binds.ToggleAutoCP.Key then
+        local newState = not _G.AutoCheckpointEnabled
+        if newState then PlaySound(542332175, 1) end
+        toggleAutoCPLogic(newState)
+    end
+
+    if Binds.ToggleNoclip.Enabled and keyCode == Binds.ToggleNoclip.Key then
+        local newState = not _G.NoclipEnabled
+        if newState then PlaySound(542332175, 1) end
+        toggleNoclipLogic(newState)
+    end
+
+    -- DriftGlitch хоткеи
+    if keyCode == Enum.KeyCode.Z then
+        _G.DriftGlitchActive = not _G.DriftGlitchActive
+        updateDriftUI()
+    elseif keyCode == Enum.KeyCode.P then
+        togglePlatform()
+    elseif keyCode == Enum.KeyCode.R then
+        _G.AutoDriftActive = not _G.AutoDriftActive
+        updateDriftUI()
+    elseif keyCode == Enum.KeyCode.E then
+        _G.DriftAngle = math.clamp(_G.DriftAngle + 1, MIN_DRIFT_ANGLE, MAX_DRIFT_ANGLE)
+        updateDriftUI()
+    elseif keyCode == Enum.KeyCode.Q then
+        _G.DriftAngle = math.clamp(_G.DriftAngle - 1, MIN_DRIFT_ANGLE, MAX_DRIFT_ANGLE)
+        updateDriftUI()
+    end
+    -- Примечание: [C] для дрифта убран из хоткеев т.к. он используется в биндах SmartRace (Noclip).
+    -- Смена стороны дрифта доступна через кнопку в меню Drift.
+end))
+
+updateDriftUI()
+print("SmartRace + DriftGlitch V5 + FarmPatch — Merged Script Loaded!")
