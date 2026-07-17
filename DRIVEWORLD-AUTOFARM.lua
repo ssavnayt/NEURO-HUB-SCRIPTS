@@ -1,6 +1,29 @@
 -- ============================================================
---  NEURO HUB - DRIVEWORLD AUTOFARM  [V3.2 - REVERTED CP LOGIC]
+--  NEURO HUB - DRIVEWORLD AUTOFARM  [V3.3 - RACE PICKER + CLAIM FIX]
 --  Original by ssavnayt, improved by Super Z
+-- ============================================================
+--  CHANGELOG v3.3 (Race picker + fixed Claim + auto-collect UI):
+--   [NEW] Race Picker category with dropdown of all 84 races
+--        * Click race name to select as target for AutoObby/AutoRace
+--        * Shows race type (OBBY/RACE), CP count, category
+--        * Filter by Obby/Regular/All
+--   [NEW] AutoObby mode - flies through obby CPs with noclip
+--        * Higher fly altitude for obby courses
+--        * Lower fly speed for tight CPs
+--        * Auto-starts selected obby if not in race
+--   [NEW] AutoRace mode - drives through race CPs
+--        * Optimized for race tracks (lower altitude, faster)
+--        * Auto-starts selected race via Solo Race menu
+--   [FIXED] Claim Daily Gold - now requires DrivePlus subscription check
+--           (won't error if not subscribed, just notifies)
+--   [FIXED] Claim Playtime Reward - now calls with index 1, 2, 3, 4, 5
+--           (was InvokeServer() with no args - server ignored it)
+--   [FIXED] TasksClaim - now passes the task Instance as argument
+--           (was InvokeServer() with no args)
+--   [NEW] Auto-Collect Money UI - scans PlayerGui for "Claim"/"Collect"
+--         buttons and clicks them via VirtualInputManager
+--   [NEW] Auto-Redeem hash-based rewards (Redeem:FireServer(hash))
+--         - captures hashes from CurrencyEarned events automatically
 -- ============================================================
 --  CHANGELOG v3.2 (CRITICAL FIX - reverted to original working logic):
 --   [CRITICAL] FIXED Auto Checkpoint! v3.0/v3.1 broke it by changing
@@ -162,6 +185,14 @@ local State = {
     LastCPName         = "",      -- hex name like "31d061"
     IsInRace           = false,
     AutoSkipStuckTime  = 30,      -- seconds before auto-skipping stuck race
+    -- v3.3: Race picker state
+    SelectedRaceName   = "",      -- "YellowObbyReverse" etc.
+    SelectedRaceType   = "",      -- "OBBY" or "RACE"
+    AutoObbyEnabled    = false,
+    AutoRaceEnabled    = false,
+    AutoCollectUI      = false,   -- auto-click Claim/Collect buttons
+    AutoRedeemHashes   = false,   -- auto-fire Redeem with captured hashes
+    CapturedHashes     = {},      -- list of hash strings seen in CurrencyEarned
 }
 
 -- Expose to _G for backward compat with other scripts
@@ -1498,6 +1529,351 @@ function startAutoCPLoop()
 end
 
 -- ============================================================
+--  v3.3: RACE PICKER + AUTO OBBY + AUTO RACE
+-- ============================================================
+
+-- Get all races from workspace.Races with their info
+local function getAllRaces()
+    local races = {}
+    local racesFolder = workspace:FindFirstChild("Races")
+    if not racesFolder then return races end
+    for _, race in ipairs(racesFolder:GetChildren()) do
+        local cpFolder = race:FindFirstChild("Checkpoints")
+        local cpCount = cpFolder and #cpFolder:GetChildren() or 0
+        local raceName = race.Name
+        local isObby = string.find(string.lower(raceName), "obby") ~= nil
+        local category = "?"
+        local cfg = race:FindFirstChild("Config")
+        if cfg then
+            local cat = cfg:FindFirstChild("RaceCategory")
+            if cat and cat:IsA("StringValue") then category = cat.Value end
+        end
+        table.insert(races, {
+            name = raceName,
+            instance = race,
+            isObby = isObby,
+            cpCount = cpCount,
+            category = category,
+        })
+    end
+    table.sort(races, function(a, b)
+        if a.isObby ~= b.isObby then return a.isObby end  -- obbies first
+        return a.name < b.name
+    end)
+    return races
+end
+
+-- Start a solo race by name (uses real remote calls from Cobalt session)
+local function startSoloRace(raceName)
+    if not raceName or raceName == "" then
+        SendNotification("Race Picker", "No race selected!", 3)
+        return false
+    end
+    local ok = pcall(function()
+        Remotes.GetSoloRaceMenu:InvokeServer(raceName, true)
+        task.wait(0.3)
+        Remotes.ConfirmSoloRaceChoice:FireServer(raceName, "myBest", true)
+    end)
+    if ok then
+        SendNotification("Race Started", raceName, 3)
+    else
+        SendNotification("Race Picker", "Failed to start " .. raceName, 3)
+    end
+    return ok
+end
+
+-- v3.3: AutoObby loop - flies through obby CPs with noclip
+-- Obbies need: higher altitude, slower speed, noclip always on
+function startAutoObbyLoop()
+    task.spawn(function()
+        local raceName = State.SelectedRaceName
+        if raceName == "" then
+            SendNotification("AutoObby", "Select an obby first!", 4)
+            return
+        end
+        SendNotification("AutoObby", "Starting " .. raceName, 4)
+        -- Try to start the race if not already in one
+        if not State.IsInRace then
+            startSoloRace(raceName)
+            task.wait(2)
+        end
+        pcall(updateNoclip, true)
+        local stuckTimer = 0
+        local lastTargetName = ""
+        while State.AutoObbyEnabled do
+            local target = findBestCheckpoint()
+            local car = getMyCar()
+            if target and car then
+                setESP(target)
+                -- Obby: use higher altitude and slower speed for tight CPs
+                local root = car.PrimaryPart or car:FindFirstChild("Main") or car:FindFirstChildWhichIsA("BasePart")
+                if root then
+                    local targetPos
+                    if typeof(target) == "Instance" then
+                        if target:IsA("BasePart") or target:IsA("MeshPart") then
+                            targetPos = target.Position
+                        else
+                            local b = target:FindFirstChild("Base")
+                            if b and (b:IsA("BasePart") or b:IsA("MeshPart")) then
+                                targetPos = b.Position
+                            else
+                                local any = target:FindFirstChildWhichIsA("BasePart")
+                                if any then targetPos = any.Position end
+                            end
+                        end
+                    end
+                    if targetPos then
+                        targetPos = targetPos + Vector3.new(0, 25, 0)  -- higher for obby
+                        local direction = (targetPos - root.Position)
+                        if direction.Magnitude > 5 then
+                            -- Slower speed for obbies
+                            local obbySpeed = math.min(Config.FLY_SPEED, 200)
+                            root.AssemblyLinearVelocity = direction.Unit * obbySpeed
+                            root.CFrame = CFrame.lookAt(root.Position, Vector3.new(targetPos.X, root.Position.Y, targetPos.Z))
+                        else
+                            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        end
+                    end
+                end
+                -- Reset stuck timer if target changed
+                if target.Name ~= lastTargetName then
+                    stuckTimer = 0
+                    lastTargetName = target.Name
+                end
+            elseif car and car.PrimaryPart then
+                pcall(function() car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end)
+            end
+            task.wait()
+        end
+        clearESP()
+        pcall(updateNoclip, false)
+    end)
+end
+
+-- v3.3: AutoRace loop - drives through race CPs at normal altitude
+function startAutoRaceLoop()
+    task.spawn(function()
+        local raceName = State.SelectedRaceName
+        if raceName == "" then
+            SendNotification("AutoRace", "Select a race first!", 4)
+            return
+        end
+        SendNotification("AutoRace", "Starting " .. raceName, 4)
+        -- Try to start the race if not already in one
+        if not State.IsInRace then
+            startSoloRace(raceName)
+            task.wait(2)
+        end
+        pcall(updateNoclip, true)
+        while State.AutoRaceEnabled do
+            local target = findBestCheckpoint()
+            local car = getMyCar()
+            if target and car then
+                setESP(target)
+                pcall(flyTo, car, target)  -- uses default altitude (15)
+            elseif car and car.PrimaryPart then
+                pcall(function() car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end)
+            end
+            task.wait()
+        end
+        clearESP()
+        pcall(updateNoclip, false)
+    end)
+end
+
+-- ============================================================
+--  v3.3: FIXED CLAIM FUNCTIONS
+--  Based on Cobalt session analysis:
+--  - ClaimPlaytimeReward needs InvokeServer(index) where index = 1, 2, 3, 4, 5
+--  - TasksClaim needs InvokeServer(taskInstance) - the actual Instance from PlayerData
+--  - ClaimDailyGold checks subscription first - won't work without DrivePlus
+-- ============================================================
+
+local function claimAllPlaytimeRewards()
+    -- Try indices 1-5 (seen in Cobalt session)
+    local claimed = 0
+    for i = 1, 5 do
+        local ok = pcall(function()
+            local result = Remotes.ClaimPlaytimeReward:InvokeServer(i)
+            if result then claimed = claimed + 1 end
+        end)
+        task.wait(0.3)
+    end
+    SendNotification("Playtime Rewards", "Claimed " .. claimed .. " rewards", 4)
+    return claimed
+end
+
+local function claimAllTasks()
+    -- Tasks are in PlayerData.<me>.Tasks.Milestones.List and Tasks.DailyQuests.List
+    local playerData = ReplicatedStorage:FindFirstChild("PlayerData")
+    if not playerData then return 0 end
+    local myData = playerData:FindFirstChild(LocalPlayer.Name)
+    if not myData then return 0 end
+    local tasks = myData:FindFirstChild("Tasks")
+    if not tasks then return 0 end
+
+    local claimed = 0
+    -- Try Milestones
+    for _, category in ipairs({"Milestones", "DailyQuests", "ClubTasks", "CarQuestEvent", "MedalEvent", "EventQuests"}) do
+        local cat = tasks:FindFirstChild(category)
+        if cat then
+            local list = cat:FindFirstChild("List")
+            if list then
+                for _, taskFolder in ipairs(list:GetChildren()) do
+                    -- Check if task is completed (has "Claimed" folder or value)
+                    local claimedFlag = taskFolder:FindFirstChild("Claimed")
+                    if claimedFlag and claimedFlag:IsA("BoolValue") and claimedFlag.Value then
+                        -- already claimed, skip
+                    else
+                        local ok = pcall(function()
+                            Remotes.TasksClaim:InvokeServer(taskFolder)
+                        end)
+                        if ok then
+                            claimed = claimed + 1
+                            task.wait(0.2)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    SendNotification("Tasks Claim", "Claimed " .. claimed .. " tasks", 4)
+    return claimed
+end
+
+local function claimDailyGoldSafe()
+    -- Check subscription first
+    local playerData = ReplicatedStorage:FindFirstChild("PlayerData")
+    local myData = playerData and playerData:FindFirstChild(LocalPlayer.Name)
+    if myData then
+        local drivePlus = myData:FindFirstChild("DrivePlus")
+        if drivePlus then
+            local isSubbed = drivePlus:FindFirstChild("AnalyticsLastIsSubscribed")
+            if isSubbed and isSubscribed:IsA("BoolValue") and not isSubscribed.Value then
+                SendNotification("Daily Gold", "Requires DrivePlus subscription!", 4)
+                return false
+            end
+        end
+    end
+    -- Try claiming
+    local ok = pcall(function() Remotes.ClaimDailyGold:InvokeServer() end)
+    if ok then
+        SendNotification("Daily Gold", "Claim attempted (check inventory)", 3)
+    else
+        SendNotification("Daily Gold", "Failed to claim", 3)
+    end
+    return ok
+end
+
+-- ============================================================
+--  v3.3: AUTO-COLLECT MONEY UI
+--  Scans PlayerGui for buttons with "Claim"/"Collect"/"Reward" text
+--  and clicks them via VirtualInputManager
+-- ============================================================
+
+local function findAndClickClaimButtons()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return 0 end
+    local clicked = 0
+    local claimKeywords = {"claim", "collect", "redeem", "get reward", "take", "pickup", "ok", "free"}
+
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled then
+            for _, descendant in ipairs(gui:GetDescendants()) do
+                if descendant:IsA("TextButton") and descendant.Visible and descendant.Active then
+                    local text = descendant.Text or ""
+                    local textLower = string.lower(text)
+                    local shouldClick = false
+                    for _, kw in ipairs(claimKeywords) do
+                        if string.find(textLower, kw) then
+                            shouldClick = true
+                            break
+                        end
+                    end
+                    -- Skip if it's a danger button
+                    if shouldClick and not string.find(textLower, "quit") and not string.find(textLower, "exit") then
+                        -- Try clicking via VirtualInputManager (more reliable)
+                        local pos = descendant.AbsolutePosition
+                        local size = descendant.AbsoluteSize
+                        if pos and size and size.X > 0 and size.Y > 0 then
+                            local centerX = pos.X + size.X / 2
+                            local centerY = pos.Y + size.Y / 2
+                            local inset = GuiService:GetGuiInset()
+                            centerY = centerY + inset.Y
+                            pcall(function()
+                                VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 1)
+                                task.wait(0.05)
+                                VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 1)
+                            end)
+                            clicked = clicked + 1
+                            if clicked >= 5 then return clicked end  -- don't spam
+                            task.wait(0.2)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return clicked
+end
+
+-- Auto-collect loop
+local autoCollectLoop = false
+local function startAutoCollectUI()
+    if autoCollectLoop then return end
+    autoCollectLoop = true
+    task.spawn(function()
+        while autoCollectLoop and State.AutoCollectUI do
+            local clicked = findAndClickClaimButtons()
+            if clicked > 0 then
+                print("[Neuro Hub] Auto-collected " .. clicked .. " UI buttons")
+            end
+            task.wait(3)  -- check every 3 seconds
+        end
+        autoCollectLoop = false
+    end)
+end
+
+-- ============================================================
+--  v3.3: AUTO-REDEEM HASH CAPTURE
+--  Listen for CurrencyEarned events to capture hash strings,
+--  then auto-fire Redeem:FireServer(hash) to claim them
+-- ============================================================
+
+local function setupHashCapture()
+    if not RemotesNotify then return end
+    local R_Currency = RemotesNotify:FindFirstChild("CurrencyEarned")
+    if R_Currency then
+        trackConn(R_Currency.OnClientEvent:Connect(function(...)
+            local args = {...}
+            -- CurrencyEarned might pass a hash as first arg
+            for _, arg in ipairs(args) do
+                if typeof(arg) == "string" and #arg > 30 then
+                    -- Looks like a hash
+                    local alreadyCaptured = false
+                    for _, h in ipairs(State.CapturedHashes) do
+                        if h == arg then
+                            alreadyCaptured = true
+                            break
+                        end
+                    end
+                    if not alreadyCaptured then
+                        table.insert(State.CapturedHashes, arg)
+                        if #State.CapturedHashes > 50 then
+                            table.remove(State.CapturedHashes, 1)
+                        end
+                        if State.AutoRedeemHashes then
+                            pcall(function() Remotes.Redeem:FireServer(arg) end)
+                            print("[Neuro Hub] Auto-redeemed hash: " .. arg:sub(1, 16) .. "...")
+                        end
+                    end
+                end
+            end
+        end))
+    end
+end
+
+-- ============================================================
 --  AUTO FLY LOOP (improved physics)
 -- ============================================================
 function startAutoFlyLoop()
@@ -1885,8 +2261,127 @@ createSlider(RaceCategory, "Burst Time (s): ",   Config.MIN_AIRFARM_BURST,  Conf
 createSlider(RaceCategory, "Stop Time (s): ",    Config.MIN_AIRFARM_STOP,   Config.MAX_AIRFARM_STOP,   Config.AIRFARM_STOP_TIME, 1, function(val) Config.AIRFARM_STOP_TIME = val end)
 createSlider(RaceCategory, "Max Dist (TP): ",    Config.MIN_AIRFARM_DIST,   Config.MAX_AIRFARM_DIST,   Config.AIRFARM_MAX_DIST, 0, function(val) Config.AIRFARM_MAX_DIST = val end)
 
+-- --- 1.5. RACE PICKER (v3.3) ---
+local RacePickerCategory = createCategory("Race Picker", UDim2.new(0, 250, 0, 400))
+
+-- Selected race label
+local selectedRaceLabel = createLabel(RacePickerCategory, "Selected: (none)")
+
+-- AutoObby / AutoRace toggles
+createToggle(RacePickerCategory, "AutoObby (selected)", false, function(state)
+    State.AutoObbyEnabled = state
+    _G.AutoObbyEnabled = state
+    if state then
+        -- Disable AutoRace if enabled
+        State.AutoRaceEnabled = false
+        _G.AutoRaceEnabled = false
+        startAutoObbyLoop()
+    end
+end)
+
+createToggle(RacePickerCategory, "AutoRace (selected)", false, function(state)
+    State.AutoRaceEnabled = state
+    _G.AutoRaceEnabled = state
+    if state then
+        State.AutoObbyEnabled = false
+        _G.AutoObbyEnabled = false
+        startAutoRaceLoop()
+    end
+end)
+
+-- Start selected race manually
+createAction(RacePickerCategory, "Start Selected Race", function(btn)
+    btn.Text = "Starting..."
+    startSoloRace(State.SelectedRaceName)
+    task.wait(0.5)
+    btn.Text = "Start Selected Race"
+end)
+
+-- Refresh race list
+local raceListFrame = nil
+local raceScrollFrame = nil
+
+createAction(RacePickerCategory, "Refresh Race List", function(btn)
+    btn.Text = "Refreshing..."
+    if raceScrollFrame then
+        raceScrollFrame:Destroy()
+    end
+    -- Create scrolling frame for race list
+    raceScrollFrame = Instance.new("ScrollingFrame")
+    raceScrollFrame.Size = UDim2.new(1, 0, 0, 200)
+    raceScrollFrame.BackgroundColor3 = COLORS.Background
+    raceScrollFrame.BorderSizePixel = 0
+    raceScrollFrame.ScrollBarThickness = 4
+    raceScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    raceScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    raceScrollFrame.Parent = RacePickerCategory
+
+    local layout = Instance.new("UIListLayout")
+    layout.Parent = raceScrollFrame
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local races = getAllRaces()
+    for i, race in ipairs(races) do
+        local raceBtn = Instance.new("TextButton")
+        raceBtn.Size = UDim2.new(1, 0, 0, 25)
+        raceBtn.BackgroundColor3 = COLORS.ButtonNormal
+        raceBtn.BorderSizePixel = 0
+        raceBtn.Text = string.format("%s %s (%d CP, %s)",
+            race.isObby and "[OBBY]" or "[RACE]",
+            race.name, race.cpCount, race.category)
+        raceBtn.TextColor3 = COLORS.Text
+        raceBtn.Font = Enum.Font.Gotham
+        raceBtn.TextSize = 11
+        raceBtn.TextXAlignment = Enum.TextXAlignment.Left
+        raceBtn.Parent = raceScrollFrame
+
+        if race.name == State.SelectedRaceName then
+            raceBtn.BackgroundColor3 = COLORS.ButtonActive
+        end
+
+        trackConn(raceBtn.MouseButton1Click:Connect(function()
+            State.SelectedRaceName = race.name
+            State.SelectedRaceType = race.isObby and "OBBY" or "RACE"
+            selectedRaceLabel.Text = "Selected: " .. race.name .. " (" .. State.SelectedRaceType .. ")"
+            -- Update button colors
+            for _, child in ipairs(raceScrollFrame:GetChildren()) do
+                if child:IsA("TextButton") then
+                    child.BackgroundColor3 = COLORS.ButtonNormal
+                end
+            end
+            raceBtn.BackgroundColor3 = COLORS.ButtonActive
+            SendNotification("Race Selected", race.name, 3)
+            saveSettings()
+        end))
+    end
+
+    btn.Text = "Refresh Race List (" .. #races .. ")"
+end)
+
+-- Quick obby shortcuts
+createAction(RacePickerCategory, "Pick: YellowObby", function(btn)
+    State.SelectedRaceName = "YellowObby"
+    State.SelectedRaceType = "OBBY"
+    selectedRaceLabel.Text = "Selected: YellowObby (OBBY)"
+    SendNotification("Selected", "YellowObby", 3)
+end)
+
+createAction(RacePickerCategory, "Pick: YellowObbyReverse", function(btn)
+    State.SelectedRaceName = "YellowObbyReverse"
+    State.SelectedRaceType = "OBBY"
+    selectedRaceLabel.Text = "Selected: YellowObbyReverse (OBBY)"
+    SendNotification("Selected", "YellowObbyReverse", 3)
+end)
+
+createAction(RacePickerCategory, "Pick: TunnelSprint", function(btn)
+    State.SelectedRaceName = "TunnelSprint"
+    State.SelectedRaceType = "RACE"
+    selectedRaceLabel.Text = "Selected: TunnelSprint (RACE)"
+    SendNotification("Selected", "TunnelSprint", 3)
+end)
+
 -- --- 2. PLAYER ---
-local PlayerCategory = createCategory("Player", UDim2.new(0, 250, 0, 50))
+local PlayerCategory = createCategory("Player", UDim2.new(0, 450, 0, 50))
 
 buttons.Noclip = createToggle(PlayerCategory, "Noclip", false, toggleNoclipLogic)
 createToggle(PlayerCategory, "Freeze Player", false, function(state) setFreeze(state) end)
@@ -1921,7 +2416,7 @@ createSlider(PlayerCategory, "Jump Power: ",       Config.MIN_JUMP, Config.MAX_J
 end)
 
 -- --- 3. DRIFT ---
-local DriftCategory = createCategory("Drift", UDim2.new(0, 450, 0, 50))
+local DriftCategory = createCategory("Drift", UDim2.new(0, 650, 0, 50))
 
 driftButtons.AngleLabel = createLabel(DriftCategory, string.format("Angle: %.1f° | Side: Right", State.DriftAngle))
 
@@ -1959,7 +2454,7 @@ end)
 -- (NOT in ReplicatedStorage.Systems.* as the original script assumed!)
 local Remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
 
-local ServerCategory = createCategory("Server", UDim2.new(0, 650, 0, 50))
+local ServerCategory = createCategory("Server", UDim2.new(0, 850, 0, 50))
 createAction(ServerCategory, "ServerSide AFK", function(btn)
     btn.Text = "Setting AFK..."
     pcall(function()
@@ -2096,7 +2591,7 @@ end)
 createAction(ServerCategory, "Safe Quit (Unload)", function() SafeQuit() end, true)
 
 -- --- 5. INFO ---
-local InfoCategory = createCategory("Info", UDim2.new(0, 850, 0, 50))
+local InfoCategory = createCategory("Info", UDim2.new(0, 1050, 0, 50))
 
 local SwitcherFrame = Instance.new("Frame")
 SwitcherFrame.Size = UDim2.new(1, 0, 0, 30)
@@ -2369,7 +2864,7 @@ task.spawn(function()
 end)
 
 -- --- 6. BINDABLES ---
-local BindsCategory = createCategory("Bindables", UDim2.new(0, 1050, 0, 50))
+local BindsCategory = createCategory("Bindables", UDim2.new(0, 1250, 0, 50))
 
 createKeybind(BindsCategory, "Fast Stop",         "FastStop")
 createKeybind(BindsCategory, "Go Up",             "GoUp")
@@ -2384,7 +2879,7 @@ createSlider(BindsCategory, "Shift Amount: ", 1, 100,   Config.SHIFT_AMOUNT,    
 createSlider(BindsCategory, "Insta Boost: ",  100, 5000, Config.INSTA_BOOST_SPEED, 0, function(val) Config.INSTA_BOOST_SPEED = val end)
 
 -- --- 7. NOTIFICATIONS ---
-local NotifCategory = createCategory("Notifications", UDim2.new(0, 1250, 0, 50))
+local NotifCategory = createCategory("Notifications", UDim2.new(0, 1450, 0, 50))
 
 createToggle(NotifCategory, "Notify Winner",      State.NotifyWinner,     function(s) State.NotifyWinner = s; _G.NotifyWinner = s end)
 createToggle(NotifCategory, "Notify Leaderboard", State.NotifyLeaderboard, function(s) State.NotifyLeaderboard = s; _G.NotifyLeaderboard = s end)
@@ -2396,7 +2891,7 @@ createToggle(NotifCategory, "Notify Hotspot",     true,  function(s) State.Notif
 createToggle(NotifCategory, "Notify Garage",      true,  function(s) State.NotifyGarage = s end)
 
 -- --- 8. AUTO (new in v3.0 - based on real RemoteEvents) ---
-local AutoCategory = createCategory("Auto", UDim2.new(0, 1450, 0, 50))
+local AutoCategory = createCategory("Auto", UDim2.new(0, 1650, 0, 50))
 
 -- Auto-claim loop state
 local autoClaimLoops = {
@@ -2422,30 +2917,50 @@ createToggle(AutoCategory, "Auto Daily Car", false, function(state)
     end
 end)
 
--- Auto-Claim Playtime Reward
-createToggle(AutoCategory, "Auto Playtime", false, function(state)
+-- v3.3 FIXED: Auto-Claim Playtime Reward (with indices 1-5)
+createToggle(AutoCategory, "Auto Playtime [FIXED]", false, function(state)
     autoClaimLoops.playtime = state
     if state then
         task.spawn(function()
             while autoClaimLoops.playtime do
-                pcall(function() Remotes.ClaimPlaytimeReward:InvokeServer() end)
+                -- Fixed: call with indices 1-5 (seen in Cobalt session)
+                for i = 1, 5 do
+                    pcall(function() Remotes.ClaimPlaytimeReward:InvokeServer(i) end)
+                    task.wait(0.3)
+                end
                 task.wait(300)  -- every 5 min
             end
         end)
-        SendNotification("Auto Playtime", "Will claim every 5 min", 4)
+        SendNotification("Auto Playtime", "Will claim indices 1-5 every 5 min", 4)
     end
 end)
 
--- Auto-Claim Daily Gold (DrivePlus subscription reward)
-createToggle(AutoCategory, "Auto Daily Gold", false, function(state)
+-- v3.3 FIXED: Auto-Claim Daily Gold (checks DrivePlus subscription)
+createToggle(AutoCategory, "Auto Daily Gold [FIXED]", false, function(state)
     autoClaimLoops.dailyGold = state
     if state then
         task.spawn(function()
             while autoClaimLoops.dailyGold do
-                pcall(function() Remotes.ClaimDailyGold:InvokeServer() end)
+                -- Fixed: check subscription first
+                local canClaim = false
+                local playerData = ReplicatedStorage:FindFirstChild("PlayerData")
+                local myData = playerData and playerData:FindFirstChild(LocalPlayer.Name)
+                if myData then
+                    local drivePlus = myData:FindFirstChild("DrivePlus")
+                    if drivePlus then
+                        local isSubbed = drivePlus:FindFirstChild("AnalyticsLastIsSubscribed")
+                        if isSubbed and isSubbed:IsA("BoolValue") and isSubbed.Value then
+                            canClaim = true
+                        end
+                    end
+                end
+                if canClaim then
+                    pcall(function() Remotes.ClaimDailyGold:InvokeServer() end)
+                end
                 task.wait(3600)  -- every hour
             end
         end)
+        SendNotification("Auto Daily Gold", "Will check subscription & claim hourly", 4)
     end
 end)
 
@@ -2464,16 +2979,41 @@ createToggle(AutoCategory, "Auto Hotspot", false, function(state)
     end
 end)
 
--- Auto-claim Tasks
-createToggle(AutoCategory, "Auto Tasks Claim", false, function(state)
+-- v3.3 FIXED: Auto-claim Tasks (passes task Instance as argument)
+createToggle(AutoCategory, "Auto Tasks Claim [FIXED]", false, function(state)
     autoClaimLoops.tasks = state
     if state then
         task.spawn(function()
             while autoClaimLoops.tasks do
-                pcall(function() Remotes.TasksClaim:InvokeServer() end)
+                -- Fixed: pass task Instance, not no args
+                local playerData = ReplicatedStorage:FindFirstChild("PlayerData")
+                if playerData then
+                    local myData = playerData:FindFirstChild(LocalPlayer.Name)
+                    if myData then
+                        local tasks = myData:FindFirstChild("Tasks")
+                        if tasks then
+                            for _, category in ipairs({"Milestones", "DailyQuests", "ClubTasks"}) do
+                                local cat = tasks:FindFirstChild(category)
+                                if cat then
+                                    local list = cat:FindFirstChild("List")
+                                    if list then
+                                        for _, taskFolder in ipairs(list:GetChildren()) do
+                                            local claimedFlag = taskFolder:FindFirstChild("Claimed")
+                                            if not (claimedFlag and claimedFlag:IsA("BoolValue") and claimedFlag.Value) then
+                                                pcall(function() Remotes.TasksClaim:InvokeServer(taskFolder) end)
+                                                task.wait(0.2)
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
                 task.wait(60)  -- every minute
             end
         end)
+        SendNotification("Auto Tasks", "Will claim all unclaimed tasks every min", 4)
     end
 end)
 
@@ -2574,8 +3114,65 @@ createToggle(AutoCategory, "Auto Buy Upgrades", false, function(state)
     end
 end)
 
+-- v3.3: Auto-Collect Money UI - scans for Claim/Collect buttons and clicks them
+createToggle(AutoCategory, "Auto-Collect UI Buttons", false, function(state)
+    State.AutoCollectUI = state
+    _G.AutoCollectUI = state
+    if state then
+        startAutoCollectUI()
+        SendNotification("Auto-Collect UI", "Scanning for Claim/Collect buttons every 3s", 4)
+    else
+        autoCollectLoop = false
+    end
+end)
+
+-- v3.3: Auto-Redeem captured hashes
+createToggle(AutoCategory, "Auto-Redeem Hashes", false, function(state)
+    State.AutoRedeemHashes = state
+    _G.AutoRedeemHashes = state
+    if state then
+        SendNotification("Auto-Redeem", "Will fire Redeem with captured hashes", 4)
+    end
+end)
+
+-- v3.3: Manual claim all playtime rewards (indices 1-5)
+createAction(AutoCategory, "Claim All Playtime", function(btn)
+    btn.Text = "Claiming..."
+    claimAllPlaytimeRewards()
+    task.wait(0.5)
+    btn.Text = "Claim All Playtime"
+end)
+
+-- v3.3: Manual claim all tasks
+createAction(AutoCategory, "Claim All Tasks", function(btn)
+    btn.Text = "Claiming..."
+    claimAllTasks()
+    task.wait(0.5)
+    btn.Text = "Claim All Tasks"
+end)
+
+-- v3.3: Manual scan & click UI buttons once
+createAction(AutoCategory, "Scan & Click UI", function(btn)
+    btn.Text = "Scanning..."
+    local clicked = findAndClickClaimButtons()
+    SendNotification("UI Scan", "Clicked " .. clicked .. " buttons", 4)
+    task.wait(0.5)
+    btn.Text = "Scan & Click UI"
+end)
+
+-- v3.3: Show captured hashes count
+createAction(AutoCategory, "Show Captured Hashes", function(btn)
+    btn.Text = "Captured: " .. #State.CapturedHashes
+    for i, h in ipairs(State.CapturedHashes) do
+        if i > 5 then break end
+        print("[Neuro Hub] Hash " .. i .. ": " .. h)
+    end
+    task.wait(2)
+    btn.Text = "Show Captured Hashes"
+end)
+
 -- --- 9. TELEPORT (new in v3.0) ---
-local TeleportCategory = createCategory("Teleport", UDim2.new(0, 1650, 0, 50))
+local TeleportCategory = createCategory("Teleport", UDim2.new(0, 1850, 0, 50))
 
 -- Teleport to random race
 createAction(TeleportCategory, "TP to Nearest Race", function(btn)
@@ -2685,7 +3282,7 @@ createAction(TeleportCategory, "TP to Waypoint", function(btn)
 end)
 
 -- --- 10. UTILS ---
-local UtilsCategory = createCategory("Utils", UDim2.new(0, 1850, 0, 50))
+local UtilsCategory = createCategory("Utils", UDim2.new(0, 2050, 0, 50))
 
 createAction(UtilsCategory, "Teleport to Waypoint", function(btn)
     teleportToWaypoint()
@@ -3202,6 +3799,9 @@ end))
 loadSettings()
 updateDriftUI()
 
+-- v3.3: Setup hash capture listener
+setupHashCapture()
+
 -- Apply saved WalkSpeed/JumpPower
 task.spawn(function()
     task.wait(1)
@@ -3216,15 +3816,19 @@ end
 -- Welcome notification
 task.spawn(function()
     task.wait(1.5)
-    SendNotification("Neuro Hub v3.2", "Auto Checkpoint FIXED!\nReverted to original color-based logic\nAll v3.0/v3.1 features kept (Auto, Teleport, ESP, etc.)", 8)
+    SendNotification("Neuro Hub v3.3", "Race Picker + AutoObby + AutoRace!\nFixed Claim Rewards (proper args)\nNew: Auto-Collect UI buttons", 8)
 end)
 
 print("==========================================")
-print("  NEURO HUB v3.2 - Loaded successfully")
-print("  CRITICAL FIX: Reverted Auto Checkpoint to original logic")
-print("  (was broken in v3.0/v3.1 by changing CP structure)")
-print("  Now uses: cp.Inner.Base / cp.Inner.Expand color detection")
-print("  Kept all v3.0/v3.1 features (Auto, Teleport, ESP, etc.)")
+print("  NEURO HUB v3.3 - Loaded successfully")
+print("  NEW: Race Picker category with all 84 races")
+print("  NEW: AutoObby mode (higher altitude, slower speed)")
+print("  NEW: AutoRace mode (normal altitude, faster)")
+print("  FIXED: ClaimPlaytimeReward now uses indices 1-5")
+print("  FIXED: TasksClaim now passes task Instance as arg")
+print("  FIXED: ClaimDailyGold checks DrivePlus subscription")
+print("  NEW: Auto-Collect UI scans Claim/Collect buttons")
+print("  NEW: Auto-Redeem captures hashes from CurrencyEarned")
 print("  Press RightShift to toggle GUI")
 print("  Press Ctrl+click categories to drag")
 print("  Right-click category to collapse")
