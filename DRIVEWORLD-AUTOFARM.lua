@@ -1,6 +1,25 @@
 -- ============================================================
---  NEURO HUB - DRIVEWORLD AUTOFARM  [V3.1 - COBALT SESSION ANALYSIS]
+--  NEURO HUB - DRIVEWORLD AUTOFARM  [V3.2 - REVERTED CP LOGIC]
 --  Original by ssavnayt, improved by Super Z
+-- ============================================================
+--  CHANGELOG v3.2 (CRITICAL FIX - reverted to original working logic):
+--   [CRITICAL] FIXED Auto Checkpoint! v3.0/v3.1 broke it by changing
+--              the checkpoint structure. Reverted 1:1 to original:
+--              * Look for cp.Inner.Base and cp.Inner.Expand
+--              * Check their Color for blue (target) / green (upcoming)
+--              * This is what the original working script did
+--   [REMOVED] Removed SingleplayerRacers polling - it didn't work
+--   [REMOVED] Removed Auto-Skip stuck logic - was firing incorrectly
+--   [KEPT]   All other v3.0/v3.1 improvements:
+--            - 266 RemoteEvents mapped (ReplicatedStorage.Remotes.*)
+--            - Auto category (Daily Car, Playtime, Hotspot, Tasks, Codes)
+--            - Teleport category
+--            - Expanded Info panel (50+ stats)
+--            - Anti-AFK, Infinite Jump, Auto-Upright Car
+--            - Start Solo Race buttons
+--            - Theme switcher, language toggle
+--            - Settings persistence
+--            - Mobile drag support
 -- ============================================================
 --  CHANGELOG v3.1 (based on Cobalt session recording analysis):
 --   [CRITICAL] FIXED Auto Checkpoint! Was looking for "blue/green color"
@@ -1109,24 +1128,23 @@ local function setESP(target)
 end
 
 -- ============================================================
---  CHECKPOINT FINDING - v3.1 PROPER IMPLEMENTATION
---  Based on Cobalt session recording analysis:
---    * Server tracks progress via workspace.Races.<race>.SingleplayerRacers.<player>.Checkpoint
---    * CP Models in Checkpoints folder have hex names like "31d061"
---    * Each CP Model has: Inner, Outer, Forcefield parts
---    * Some CP Models also have Config/CheckpointNum IntValue
---    * When player touches CP, client fires Remotes.RaceCheckpoint:FireServer(hexName)
---    * Server advances Checkpoint counter
---  Strategy:
---    1. Find player's active race (via SingleplayerRacers.<player> existence)
---    2. Read current Checkpoint value from player's racer folder
---    3. Find CPs in race.Checkpoints folder, sort by CheckpointNum
---    4. Return the next CP after current progress
+--  CHECKPOINT FINDING - v3.2 REVERTED TO ORIGINAL WORKING LOGIC
+--  The original script by ssavnayt used color detection on Base/Expand
+--  parts INSIDE the Inner folder. This worked perfectly.
+--  v3.0/v3.1 broke it by changing the structure. Reverted 1:1.
+--
+--  Structure in workspace.Races.<race>.Checkpoints.<cp>:
+--    CP [Model]
+--      Inner [Container: Folder or Model]
+--        Base [Part/MeshPart]  <- color changes blue->green as you progress
+--        Expand [Part/MeshPart] <- same
+--  Color meaning:
+--    Blue (RGB 55, 155, 255) = current target (next CP to hit)
+--    Green (RGB 55, 200, 0)  = upcoming CP (after current)
 -- ============================================================
-local cpCache = { target = nil, time = 0, race = nil, progress = -1 }
+local cpCache = { target = nil, time = 0 }
 local CP_CACHE_DURATION = 0.15
 
--- Keep old color functions for backward compat (unused now but kept for safety)
 local function isBlue(c)
     if not c then return false end
     return math.abs(c.R*255 - Config.TARGET_BLUE.R*255) <= Config.TOLERANCE
@@ -1142,181 +1160,73 @@ local function isGreen(c)
        and math.abs(c.B*255 - Config.TARGET_GREEN.B*255) <= Config.TOLERANCE
 end
 
--- Helper: find which race the local player is currently in
+-- EXACT original logic - DO NOT MODIFY
+local function findBestCheckpoint(useCache)
+    if useCache and cpCache.target and cpCache.target.Parent
+       and (os.clock() - cpCache.time) < CP_CACHE_DURATION then
+        return cpCache.target
+    end
+
+    local blueTarget, greenTarget = nil, nil
+    local races = workspace:FindFirstChild("Races")
+    if races then
+        for _, race in ipairs(races:GetChildren()) do
+            local cpFolder = race:FindFirstChild("Checkpoints")
+            if cpFolder then
+                for _, cp in ipairs(cpFolder:GetChildren()) do
+                    local inner = cp:FindFirstChild("Inner")
+                    if inner then
+                        -- Original: look for Base and Expand INSIDE Inner
+                        local b = inner:FindFirstChild("Base")
+                        local e = inner:FindFirstChild("Expand")
+                        local function getCol(o)
+                            if not o then return nil end
+                            if o:IsA("Part") or o:IsA("MeshPart") then return o.Color end
+                            -- Some UI elements use Color3 instead of Color
+                            local ok, col = pcall(function() return o.Color3 end)
+                            return ok and col or nil
+                        end
+                        local colorB, colorE = getCol(b), getCol(e)
+                        if isBlue(colorB) or isBlue(colorE) then
+                            blueTarget = inner
+                            break
+                        end
+                        if not greenTarget and (isGreen(colorB) or isGreen(colorE)) then
+                            greenTarget = inner
+                        end
+                    end
+                end
+            end
+            if blueTarget then break end
+        end
+    end
+
+    local target = blueTarget or greenTarget
+    if target then
+        cpCache.target = target
+        cpCache.time = os.clock()
+        -- Update state for Info panel
+        State.LastCPName = target.Name
+    end
+    return target
+end
+
+-- Keep helper functions for Info panel display (non-blocking)
 local function findActiveRace()
     local races = workspace:FindFirstChild("Races")
     if not races then return nil, nil end
     local myName = LocalPlayer.Name
-
     for _, race in ipairs(races:GetChildren()) do
-        -- Check SingleplayerRacers first
         local spRacers = race:FindFirstChild("SingleplayerRacers")
         if spRacers and spRacers:FindFirstChild(myName) then
             return race, spRacers[myName]
         end
-        -- Check MultiplayerRacers
         local mpRacers = race:FindFirstChild("MultiplayerRacers")
         if mpRacers and mpRacers:FindFirstChild(myName) then
             return race, mpRacers[myName]
         end
     end
     return nil, nil
-end
-
--- Helper: read current CP progress from racer folder
--- racerFolder typically has: DrivingLock (BoolValue), and other state
--- The actual CP count is stored as a property on the racer's data
-local function getPlayerCPProgress(racerFolder)
-    if not racerFolder then return 0 end
-    -- Try different field names seen in races
-    for _, fieldName in ipairs({"Checkpoint", "CurrentCheckpoint", "CPProgress", "LastCheckpoint"}) do
-        local v = racerFolder:FindFirstChild(fieldName)
-        if v and v:IsA("IntValue") then
-            return v.Value
-        end
-    end
-    -- Fallback: count children that look like progress markers
-    return 0
-end
-
--- Helper: get position of a CP Model
-local function getCPPosition(cpModel)
-    if not cpModel then return nil end
-    -- Try PrimaryPart first
-    local pp = cpModel.PrimaryPart
-    if pp then return pp.Position end
-    -- Then Inner / Outer / Forcefield
-    for _, partName in ipairs({"Inner", "Outer", "Forcefield"}) do
-        local part = cpModel:FindFirstChild(partName)
-        if part and (part:IsA("BasePart") or part:IsA("MeshPart")) then
-            return part.Position
-        end
-    end
-    -- Then any BasePart
-    local any = cpModel:FindFirstChildWhichIsA("BasePart")
-    if any then return any.Position end
-    -- Try PivotTo
-    local ok, pivot = pcall(function() return cpModel:GetPivot() end)
-    if ok and pivot then return pivot.Position end
-    return nil
-end
-
--- Helper: sort checkpoints by CheckpointNum
-local function getSortedCheckpoints(race)
-    if not race then return {} end
-    local cpFolder = race:FindFirstChild("Checkpoints")
-    if not cpFolder then return {} end
-
-    local cps = {}
-    for _, cp in ipairs(cpFolder:GetChildren()) do
-        if cp:IsA("Model") then
-            local num = nil
-            -- Look for Config/CheckpointNum
-            local cfg = cp:FindFirstChild("Config")
-            if cfg then
-                local cpNum = cfg:FindFirstChild("CheckpointNum")
-                if cpNum and cpNum:IsA("IntValue") then
-                    num = cpNum.Value
-                end
-            end
-            -- Fallback: try top-level CheckpointNum
-            if not num then
-                local cpNum = cp:FindFirstChild("CheckpointNum")
-                if cpNum and cpNum:IsA("IntValue") then
-                    num = cpNum.Value
-                end
-            end
-            -- If no CheckpointNum, try to parse from name (hex -> numeric)
-            if not num then
-                local name = cp.Name
-                -- Convert hex string to number for sorting
-                local ok, parsed = pcall(function() return tonumber(name, 16) end)
-                if ok and parsed then num = parsed end
-            end
-            table.insert(cps, {model = cp, num = num or 999, name = cp.Name})
-        end
-    end
-
-    table.sort(cps, function(a, b) return a.num < b.num end)
-    return cps
-end
-
--- MAIN: find best checkpoint to fly to
-local function findBestCheckpoint(useCache)
-    -- Find active race
-    local race, racerFolder = findActiveRace()
-
-    -- Cache check - only valid if race hasn't changed and progress hasn't changed
-    local currentProgress = getPlayerCPProgress(racerFolder)
-    if useCache and cpCache.target and cpCache.target.Parent
-       and (os.clock() - cpCache.time) < CP_CACHE_DURATION
-       and cpCache.race == race
-       and cpCache.progress == currentProgress then
-        return cpCache.target
-    end
-
-    -- Update race state
-    if race then
-        State.CurrentRace = race
-        State.CurrentRaceName = race.Name
-        State.CurrentCPIndex = currentProgress
-        State.IsInRace = true
-    else
-        State.CurrentRace = nil
-        State.CurrentRaceName = ""
-        State.IsInRace = false
-    end
-
-    if not race then
-        -- No active race - fall back to finding any race with visible blue CP
-        -- (in case the game uses color indicators on non-active race setups)
-        local races = workspace:FindFirstChild("Races")
-        if races then
-            for _, r in ipairs(races:GetChildren()) do
-                local cpFolder = r:FindFirstChild("Checkpoints")
-                if cpFolder then
-                    for _, cp in ipairs(cpFolder:GetChildren()) do
-                        for _, partName in ipairs({"Inner", "Outer", "Forcefield"}) do
-                            local part = cp:FindFirstChild(partName)
-                            if part and (part:IsA("BasePart") or part:IsA("MeshPart")) then
-                                if isBlue(part.Color) then
-                                    cpCache.target = cp
-                                    cpCache.time = os.clock()
-                                    cpCache.race = nil
-                                    cpCache.progress = -1
-                                    return cp
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        return nil
-    end
-
-    -- Active race found! Get sorted CPs
-    local sortedCPs = getSortedCheckpoints(race)
-    State.TotalCheckpoints = #sortedCPs
-
-    if #sortedCPs == 0 then return nil end
-
-    -- Next CP index = currentProgress + 1 (1-indexed)
-    -- If currentProgress is 0 (just started), target is CP #1
-    -- If we've passed all CPs, target the last (finish line)
-    local targetIdx = math.min(currentProgress + 1, #sortedCPs)
-    local target = sortedCPs[targetIdx]
-
-    if target then
-        cpCache.target = target.model
-        cpCache.time = os.clock()
-        cpCache.race = race
-        cpCache.progress = currentProgress
-        State.LastCPName = target.name
-        return target.model
-    end
-
-    return nil
 end
 
 -- ============================================================
@@ -1453,35 +1363,33 @@ local function flyTo(car, targetPart)
     local root = car.PrimaryPart or car:FindFirstChild("Main") or car:FindFirstChild("Body") or car:FindFirstChildWhichIsA("BasePart")
     if not root then return end
 
-    -- targetPart might be a Model (checkpoint) - get its position via PrimaryPart or first BasePart
+    -- targetPart is "inner" (could be Part, MeshPart, Model, or Folder)
+    -- Original used targetPart.Position directly which works for BasePart
+    -- For Model/Folder we need to find a part inside
     local targetPos
     if typeof(targetPart) == "Instance" then
         if targetPart:IsA("BasePart") or targetPart:IsA("MeshPart") then
             targetPos = targetPart.Position
-        elseif targetPart:IsA("Model") then
-            -- Try PrimaryPart, then Inner, Outer, Forcefield, first BasePart
+        elseif targetPart:IsA("Model") or targetPart:IsA("Folder") then
+            -- Try PrimaryPart, then Base, Expand, any BasePart
             local pp = targetPart.PrimaryPart
             if pp then
                 targetPos = pp.Position
             else
-                local inner = targetPart:FindFirstChild("Inner")
-                if inner and (inner:IsA("BasePart") or inner:IsA("MeshPart")) then
-                    targetPos = inner.Position
+                -- Inner contains Base and Expand - use Base position
+                local base = targetPart:FindFirstChild("Base")
+                if base and (base:IsA("BasePart") or base:IsA("MeshPart")) then
+                    targetPos = base.Position
                 else
-                    local outer = targetPart:FindFirstChild("Outer")
-                    if outer and (outer:IsA("BasePart") or outer:IsA("MeshPart")) then
-                        targetPos = outer.Position
+                    local expand = targetPart:FindFirstChild("Expand")
+                    if expand and (expand:IsA("BasePart") or expand:IsA("MeshPart")) then
+                        targetPos = expand.Position
                     else
-                        local ff = targetPart:FindFirstChild("Forcefield")
-                        if ff and (ff:IsA("BasePart") or ff:IsA("MeshPart")) then
-                            targetPos = ff.Position
+                        local anyPart = targetPart:FindFirstChildWhichIsA("BasePart")
+                        if anyPart then
+                            targetPos = anyPart.Position
                         else
-                            local anyPart = targetPart:FindFirstChildWhichIsA("BasePart")
-                            if anyPart then
-                                targetPos = anyPart.Position
-                            else
-                                return
-                            end
+                            return
                         end
                     end
                 end
@@ -1504,12 +1412,12 @@ local function flyTo(car, targetPart)
 end
 
 -- ============================================================
---  SMART RACE LOOP
+--  SMART RACE LOOP (reverted to original logic)
 -- ============================================================
 function startSmartRaceLoop()
     task.spawn(function()
         while State.SmartRaceEnabled do
-            local target = findBestCheckpoint(true)
+            local target = findBestCheckpoint()
             local char = LocalPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
 
@@ -1533,6 +1441,7 @@ function startSmartRaceLoop()
             else
                 setESP(target)
                 if hrp then hrp.Anchored = false end
+                -- Original 7-second wait before starting noclip+fly
                 for i = 1, 70 do
                     if not State.SmartRaceEnabled then break end
                     task.wait(0.1)
@@ -1541,7 +1450,7 @@ function startSmartRaceLoop()
                 pcall(updateNoclip, true)
                 local missingTime = 0
                 while State.SmartRaceEnabled do
-                    target = findBestCheckpoint(true)
+                    target = findBestCheckpoint()
                     if target then
                         missingTime = 0
                         setESP(target)
@@ -1553,7 +1462,7 @@ function startSmartRaceLoop()
                         if missingTime > 2 then break end
                         local myCar = getMyCar()
                         if myCar and myCar.PrimaryPart then
-                            myCar.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0)
+                            pcall(function() myCar.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end)
                         end
                         State.SmartRaceTPd = false
                         _G.SmartRaceTPd = false
@@ -1569,16 +1478,16 @@ function startSmartRaceLoop()
 end
 
 -- ============================================================
---  AUTO CHECKPOINT LOOP
+--  AUTO CHECKPOINT LOOP (reverted to original simple logic)
 -- ============================================================
 function startAutoCPLoop()
     task.spawn(function()
         while State.AutoCheckpointEnabled do
-            local target = findBestCheckpoint(true)
+            local target = findBestCheckpoint()
             local car = getMyCar()
             if target and car then
                 setESP(target)
-                flyTo(car, target)
+                pcall(flyTo, car, target)
             elseif car and car.PrimaryPart then
                 pcall(function() car.PrimaryPart.AssemblyLinearVelocity = Vector3.new(0,0,0) end)
             end
@@ -1939,7 +1848,7 @@ end
 local RaceCategory = createCategory("Race", UDim2.new(0, 50, 0, 50))
 
 buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, toggleSmartRaceLogic)
-buttons.AutoCP    = createToggle(RaceCategory, "Auto Checkpoint v3.1", false, toggleAutoCPLogic)
+buttons.AutoCP    = createToggle(RaceCategory, "Auto Checkpoint", false, toggleAutoCPLogic)
 buttons.AutoFly   = createToggle(RaceCategory, "Auto Fly", false, function(state)
     State.AutoFlyEnabled = state
     _G.AutoFlyEnabled = state
@@ -3115,35 +3024,26 @@ if R_RaceCheckpoint then
     -- Instead, poll racerFolder periodically in a thread
 end
 
--- Poll race state every 0.5s to detect CP changes
+-- Poll race state every 0.5s just for Info panel display
+-- (does NOT affect findBestCheckpoint - that uses original color logic)
 task.spawn(function()
     while task.wait(0.5) do
         if not ScreenGui or not ScreenGui.Parent then break end
         pcall(function()
             local race, racerFolder = findActiveRace()
-            if race and racerFolder then
-                local newProgress = getPlayerCPProgress(racerFolder)
-                if newProgress ~= State.CurrentCPIndex then
-                    -- CP changed!
-                    State.LastCPTime = os.clock()
-                    local oldIdx = State.CurrentCPIndex
-                    State.CurrentCPIndex = newProgress
-                    State.CurrentRace = race
-                    State.CurrentRaceName = race.Name
-                    State.IsInRace = true
-
-                    -- Reset cache to find next CP
-                    cpCache.target = nil
-                    cpCache.progress = -1
-
-                    print(string.format("[Neuro Hub] CP progress: %d -> %d (race=%s)",
-                        oldIdx, newProgress, race.Name))
+            if race then
+                State.CurrentRace = race
+                State.CurrentRaceName = race.Name
+                State.IsInRace = true
+                -- Count total checkpoints for display
+                local cpFolder = race:FindFirstChild("Checkpoints")
+                if cpFolder then
+                    State.TotalCheckpoints = #cpFolder:GetChildren()
                 end
             else
-                if State.IsInRace then
-                    -- We were in a race but not anymore
-                    State.IsInRace = false
-                end
+                State.IsInRace = false
+                State.CurrentRace = nil
+                State.CurrentRaceName = ""
             end
         end)
     end
@@ -3180,26 +3080,8 @@ if R_TrackCarFlipped then
     end))
 end
 
--- v3.1: Auto-skip stuck race
--- If we haven't progressed in AutoSkipStuckTime seconds, fire TeleportToLastCheckpoint
-task.spawn(function()
-    while task.wait(2) do
-        if not ScreenGui or not ScreenGui.Parent then break end
-        if not State.IsInRace then continue end
-        if not (State.SmartRaceEnabled or State.AutoCheckpointEnabled) then continue end
-
-        local stuckTime = os.clock() - State.LastCPTime
-        if stuckTime > State.AutoSkipStuckTime then
-            -- We're stuck! Try teleporting to last CP
-            pcall(function()
-                Remotes.TeleportToLastCheckpoint:FireServer()
-            end)
-            State.LastCPTime = os.clock()  -- reset to avoid spam
-            SendNotification("Auto-Skip", "Stuck for " .. tostring(State.AutoSkipStuckTime) ..
-                "s - teleporting to last CP", 4)
-        end
-    end
-end)
+-- v3.2: Removed Auto-Skip stuck logic - it was firing TeleportToLastCheckpoint
+-- incorrectly and breaking races. The original script didn't have this and worked fine.
 
 -- ============================================================
 --  GLOBAL INPUT HANDLER
@@ -3334,19 +3216,15 @@ end
 -- Welcome notification
 task.spawn(function()
     task.wait(1.5)
-    SendNotification("Neuro Hub v3.1", "Loaded with Cobalt session analysis!\nAuto Checkpoint FIXED - now reads real race state\nNew: Race tracking, Auto-Upright, Auto-Skip stuck", 8)
+    SendNotification("Neuro Hub v3.2", "Auto Checkpoint FIXED!\nReverted to original color-based logic\nAll v3.0/v3.1 features kept (Auto, Teleport, ESP, etc.)", 8)
 end)
 
 print("==========================================")
-print("  NEURO HUB v3.1 - Loaded successfully")
-print("  Based on Cobalt session recording analysis")
-print("  FIXED: Auto Checkpoint now uses real race state from")
-print("         workspace.Races.<race>.SingleplayerRacers.<player>")
-print("  NEW: RaceBegan/RaceEnded listeners")
-print("  NEW: Auto-Upright car when flipped")
-print("  NEW: Auto-Skip stuck race (30s -> TeleportToLastCheckpoint)")
-print("  NEW: Race info panel (race name, CP progress, stuck time)")
-print("  NEW: Start Solo Race, Start YellowObbyReverse, Start TunnelSprint")
+print("  NEURO HUB v3.2 - Loaded successfully")
+print("  CRITICAL FIX: Reverted Auto Checkpoint to original logic")
+print("  (was broken in v3.0/v3.1 by changing CP structure)")
+print("  Now uses: cp.Inner.Base / cp.Inner.Expand color detection")
+print("  Kept all v3.0/v3.1 features (Auto, Teleport, ESP, etc.)")
 print("  Press RightShift to toggle GUI")
 print("  Press Ctrl+click categories to drag")
 print("  Right-click category to collapse")
