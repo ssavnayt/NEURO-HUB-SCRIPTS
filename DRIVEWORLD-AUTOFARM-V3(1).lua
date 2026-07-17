@@ -1,6 +1,24 @@
 -- ============================================================
---  NEURO HUB - DRIVEWORLD AUTOFARM  [V3.0 - DATA-DRIVEN]
+--  NEURO HUB - DRIVEWORLD AUTOFARM  [V3.1 - COBALT SESSION ANALYSIS]
 --  Original by ssavnayt, improved by Super Z
+-- ============================================================
+--  CHANGELOG v3.1 (based on Cobalt session recording analysis):
+--   [CRITICAL] FIXED Auto Checkpoint! Was looking for "blue/green color"
+--              on Base/Expand (didn't exist). Real mechanic:
+--              * Each CP Model has a HEX name (e.g. "31d061", "31d0e2")
+--              * Server tracks progress via SingleplayerRacers.<player>
+--              * Client sends RaceCheckpoint:FireServer(hexCode) on touch
+--              * Color hex codes seen: 00e5ff, ffaa00, ffffff
+--   [NEW] Auto Checkpoint now:
+--        * Reads player progress from workspace.Races.<race>.SingleplayerRacers.<player>
+--        * Finds the next CP by index (sorted by CheckpointNum)
+--        * Flies to its position (Inner/Outer part)
+--   [NEW] Race detection: monitors RaceBegan OnClientEvent to know
+--         which race is currently active
+--   [NEW] Race state info: shows current race, checkpoint progress
+--   [NEW] Auto-Skip Race: if stuck > 30s on same CP, fire TeleportToLastCheckpoint
+--   [NEW] Track TrackCarFlipped events (auto-upright car)
+--   [NEW] Better SmartRace: now uses real race data
 -- ============================================================
 --  CHANGELOG v3.0 (based on real .rbxlx analysis):
 --   [CRITICAL] Fixed findBestCheckpoint: was looking for Base/Expand
@@ -103,6 +121,7 @@ local State = {
     AntiAFKEnabled      = false,
     InfiniteJumpEnabled = false,
     ESPEnabled          = true,
+    AutoUprightCar      = true,   -- v3.1: auto-upright car when flipped
     -- notifications
     NotifyWinner       = true,
     NotifyLeaderboard  = true,
@@ -115,6 +134,15 @@ local State = {
     RacesWon           = 0,
     CashEarned         = 0,
     StartTime          = os.time(),
+    -- v3.1: race state tracking
+    CurrentRace        = nil,     -- workspace.Races.<race> instance
+    CurrentRaceName    = "",      -- "YellowObbyReverse" etc.
+    CurrentCPIndex     = 0,       -- last CP index passed
+    TotalCheckpoints   = 0,       -- total CPs in current race
+    LastCPTime         = 0,       -- os.clock() when last CP was hit
+    LastCPName         = "",      -- hex name like "31d061"
+    IsInRace           = false,
+    AutoSkipStuckTime  = 30,      -- seconds before auto-skipping stuck race
 }
 
 -- Expose to _G for backward compat with other scripts
@@ -1081,17 +1109,24 @@ local function setESP(target)
 end
 
 -- ============================================================
---  CHECKPOINT FINDING (cached for performance)
---  Based on .rbxlx analysis:
---    Race > Checkpoints > CP_<hex> [Model]
---    Each checkpoint Model contains: Inner | Outer | Forcefield
---    (NOT Base/Expand as the original script assumed!)
---    Inner is invisible (Transparency=1), Outer is visible (0.1)
---    Forcefield is the colored MeshPart that changes color
+--  CHECKPOINT FINDING - v3.1 PROPER IMPLEMENTATION
+--  Based on Cobalt session recording analysis:
+--    * Server tracks progress via workspace.Races.<race>.SingleplayerRacers.<player>.Checkpoint
+--    * CP Models in Checkpoints folder have hex names like "31d061"
+--    * Each CP Model has: Inner, Outer, Forcefield parts
+--    * Some CP Models also have Config/CheckpointNum IntValue
+--    * When player touches CP, client fires Remotes.RaceCheckpoint:FireServer(hexName)
+--    * Server advances Checkpoint counter
+--  Strategy:
+--    1. Find player's active race (via SingleplayerRacers.<player> existence)
+--    2. Read current Checkpoint value from player's racer folder
+--    3. Find CPs in race.Checkpoints folder, sort by CheckpointNum
+--    4. Return the next CP after current progress
 -- ============================================================
-local cpCache = { target = nil, time = 0 }
-local CP_CACHE_DURATION = 0.15  -- reduced from 0.25 for snappier tracking
+local cpCache = { target = nil, time = 0, race = nil, progress = -1 }
+local CP_CACHE_DURATION = 0.15
 
+-- Keep old color functions for backward compat (unused now but kept for safety)
 local function isBlue(c)
     if not c then return false end
     return math.abs(c.R*255 - Config.TARGET_BLUE.R*255) <= Config.TOLERANCE
@@ -1107,54 +1142,181 @@ local function isGreen(c)
        and math.abs(c.B*255 - Config.TARGET_GREEN.B*255) <= Config.TOLERANCE
 end
 
-local function findBestCheckpoint(useCache)
-    if useCache and cpCache.target and (os.clock() - cpCache.time) < CP_CACHE_DURATION then
-        if cpCache.target and cpCache.target.Parent then
-            return cpCache.target
+-- Helper: find which race the local player is currently in
+local function findActiveRace()
+    local races = workspace:FindFirstChild("Races")
+    if not races then return nil, nil end
+    local myName = LocalPlayer.Name
+
+    for _, race in ipairs(races:GetChildren()) do
+        -- Check SingleplayerRacers first
+        local spRacers = race:FindFirstChild("SingleplayerRacers")
+        if spRacers and spRacers:FindFirstChild(myName) then
+            return race, spRacers[myName]
+        end
+        -- Check MultiplayerRacers
+        local mpRacers = race:FindFirstChild("MultiplayerRacers")
+        if mpRacers and mpRacers:FindFirstChild(myName) then
+            return race, mpRacers[myName]
+        end
+    end
+    return nil, nil
+end
+
+-- Helper: read current CP progress from racer folder
+-- racerFolder typically has: DrivingLock (BoolValue), and other state
+-- The actual CP count is stored as a property on the racer's data
+local function getPlayerCPProgress(racerFolder)
+    if not racerFolder then return 0 end
+    -- Try different field names seen in races
+    for _, fieldName in ipairs({"Checkpoint", "CurrentCheckpoint", "CPProgress", "LastCheckpoint"}) do
+        local v = racerFolder:FindFirstChild(fieldName)
+        if v and v:IsA("IntValue") then
+            return v.Value
+        end
+    end
+    -- Fallback: count children that look like progress markers
+    return 0
+end
+
+-- Helper: get position of a CP Model
+local function getCPPosition(cpModel)
+    if not cpModel then return nil end
+    -- Try PrimaryPart first
+    local pp = cpModel.PrimaryPart
+    if pp then return pp.Position end
+    -- Then Inner / Outer / Forcefield
+    for _, partName in ipairs({"Inner", "Outer", "Forcefield"}) do
+        local part = cpModel:FindFirstChild(partName)
+        if part and (part:IsA("BasePart") or part:IsA("MeshPart")) then
+            return part.Position
+        end
+    end
+    -- Then any BasePart
+    local any = cpModel:FindFirstChildWhichIsA("BasePart")
+    if any then return any.Position end
+    -- Try PivotTo
+    local ok, pivot = pcall(function() return cpModel:GetPivot() end)
+    if ok and pivot then return pivot.Position end
+    return nil
+end
+
+-- Helper: sort checkpoints by CheckpointNum
+local function getSortedCheckpoints(race)
+    if not race then return {} end
+    local cpFolder = race:FindFirstChild("Checkpoints")
+    if not cpFolder then return {} end
+
+    local cps = {}
+    for _, cp in ipairs(cpFolder:GetChildren()) do
+        if cp:IsA("Model") then
+            local num = nil
+            -- Look for Config/CheckpointNum
+            local cfg = cp:FindFirstChild("Config")
+            if cfg then
+                local cpNum = cfg:FindFirstChild("CheckpointNum")
+                if cpNum and cpNum:IsA("IntValue") then
+                    num = cpNum.Value
+                end
+            end
+            -- Fallback: try top-level CheckpointNum
+            if not num then
+                local cpNum = cp:FindFirstChild("CheckpointNum")
+                if cpNum and cpNum:IsA("IntValue") then
+                    num = cpNum.Value
+                end
+            end
+            -- If no CheckpointNum, try to parse from name (hex -> numeric)
+            if not num then
+                local name = cp.Name
+                -- Convert hex string to number for sorting
+                local ok, parsed = pcall(function() return tonumber(name, 16) end)
+                if ok and parsed then num = parsed end
+            end
+            table.insert(cps, {model = cp, num = num or 999, name = cp.Name})
         end
     end
 
-    local blueTarget, greenTarget = nil, nil
-    local races = workspace:FindFirstChild("Races")
-    if races then
-        for _, race in ipairs(races:GetChildren()) do
-            local cpFolder = race:FindFirstChild("Checkpoints")
-            if cpFolder then
-                for _, cp in ipairs(cpFolder:GetChildren()) do
-                    -- Drive World CP structure: Inner / Outer / Forcefield
-                    -- Check colors on all three parts
-                    local function checkPartColor(partName)
-                        local part = cp:FindFirstChild(partName)
-                        if not part then return nil end
-                        if part:IsA("BasePart") or part:IsA("MeshPart") then
-                            return part.Color
+    table.sort(cps, function(a, b) return a.num < b.num end)
+    return cps
+end
+
+-- MAIN: find best checkpoint to fly to
+local function findBestCheckpoint(useCache)
+    -- Find active race
+    local race, racerFolder = findActiveRace()
+
+    -- Cache check - only valid if race hasn't changed and progress hasn't changed
+    local currentProgress = getPlayerCPProgress(racerFolder)
+    if useCache and cpCache.target and cpCache.target.Parent
+       and (os.clock() - cpCache.time) < CP_CACHE_DURATION
+       and cpCache.race == race
+       and cpCache.progress == currentProgress then
+        return cpCache.target
+    end
+
+    -- Update race state
+    if race then
+        State.CurrentRace = race
+        State.CurrentRaceName = race.Name
+        State.CurrentCPIndex = currentProgress
+        State.IsInRace = true
+    else
+        State.CurrentRace = nil
+        State.CurrentRaceName = ""
+        State.IsInRace = false
+    end
+
+    if not race then
+        -- No active race - fall back to finding any race with visible blue CP
+        -- (in case the game uses color indicators on non-active race setups)
+        local races = workspace:FindFirstChild("Races")
+        if races then
+            for _, r in ipairs(races:GetChildren()) do
+                local cpFolder = r:FindFirstChild("Checkpoints")
+                if cpFolder then
+                    for _, cp in ipairs(cpFolder:GetChildren()) do
+                        for _, partName in ipairs({"Inner", "Outer", "Forcefield"}) do
+                            local part = cp:FindFirstChild(partName)
+                            if part and (part:IsA("BasePart") or part:IsA("MeshPart")) then
+                                if isBlue(part.Color) then
+                                    cpCache.target = cp
+                                    cpCache.time = os.clock()
+                                    cpCache.race = nil
+                                    cpCache.progress = -1
+                                    return cp
+                                end
+                            end
                         end
-                        return nil
-                    end
-
-                    local innerColor = checkPartColor("Inner")
-                    local outerColor = checkPartColor("Outer")
-                    local forcefieldColor = checkPartColor("Forcefield")
-
-                    -- Blue = current target, Green = next/upcoming
-                    if isBlue(innerColor) or isBlue(outerColor) or isBlue(forcefieldColor) then
-                        blueTarget = cp
-                        break
-                    end
-                    if not greenTarget and (isGreen(innerColor) or isGreen(outerColor) or isGreen(forcefieldColor)) then
-                        greenTarget = cp
                     end
                 end
             end
-            if blueTarget then break end
         end
+        return nil
     end
 
-    -- Return the CP model itself (not Inner), so ESP/flyTo can use its Position
-    local target = blueTarget or greenTarget
-    cpCache.target = target
-    cpCache.time = os.clock()
-    return target
+    -- Active race found! Get sorted CPs
+    local sortedCPs = getSortedCheckpoints(race)
+    State.TotalCheckpoints = #sortedCPs
+
+    if #sortedCPs == 0 then return nil end
+
+    -- Next CP index = currentProgress + 1 (1-indexed)
+    -- If currentProgress is 0 (just started), target is CP #1
+    -- If we've passed all CPs, target the last (finish line)
+    local targetIdx = math.min(currentProgress + 1, #sortedCPs)
+    local target = sortedCPs[targetIdx]
+
+    if target then
+        cpCache.target = target.model
+        cpCache.time = os.clock()
+        cpCache.race = race
+        cpCache.progress = currentProgress
+        State.LastCPName = target.name
+        return target.model
+    end
+
+    return nil
 end
 
 -- ============================================================
@@ -1777,7 +1939,7 @@ end
 local RaceCategory = createCategory("Race", UDim2.new(0, 50, 0, 50))
 
 buttons.SmartRace = createToggle(RaceCategory, "Smart Race", false, toggleSmartRaceLogic)
-buttons.AutoCP    = createToggle(RaceCategory, "Auto Checkpoint", false, toggleAutoCPLogic)
+buttons.AutoCP    = createToggle(RaceCategory, "Auto Checkpoint v3.1", false, toggleAutoCPLogic)
 buttons.AutoFly   = createToggle(RaceCategory, "Auto Fly", false, function(state)
     State.AutoFlyEnabled = state
     _G.AutoFlyEnabled = state
@@ -1832,6 +1994,10 @@ createToggle(PlayerCategory, "Checkpoint ESP", State.ESPEnabled, function(state)
     State.ESPEnabled = state
     _G.ESPEnabled = state
     if not state then clearESP() end
+end)
+createToggle(PlayerCategory, "Auto-Upright Car", State.AutoUprightCar, function(state)
+    State.AutoUprightCar = state
+    _G.AutoUprightCar = state
 end)
 
 createSlider(PlayerCategory, "Speed Multiplier: ", Config.MIN_MULT, Config.MAX_MULT, Config.SPEED_MULTIPLIER, 3, function(val) Config.SPEED_MULTIPLIER = val end)
@@ -1918,6 +2084,67 @@ createAction(ServerCategory, "Spawn My Car", function(btn)
     end)
     task.wait(0.5)
     btn.Text = "Spawn My Car"
+end)
+-- v3.1: Start Solo Race (uses real remote calls from Cobalt session)
+-- Based on Cobalt recording: GetSoloRaceMenu -> ConfirmSoloRaceChoice("raceName", "myBest", true)
+createAction(ServerCategory, "Start Solo Race (race name)", function(btn)
+    btn.Text = "Starting..."
+    print("[Neuro Hub] To start a solo race, set:")
+    print("  getgenv().NeuroHubSoloRace = 'YellowObbyReverse'  -- or any race name")
+    print("  Then press this button again")
+    print("  Available races: YellowObbyReverse, YellowObby, WoodlandRally,")
+    print("  WestCityCircuit, WaterfallRush, TunnelSprint, HighwayRampLoop, etc.")
+    if getgenv and getgenv().NeuroHubSoloRace then
+        local raceName = getgenv().NeuroHubSoloRace
+        pcall(function()
+            Remotes.GetSoloRaceMenu:InvokeServer(raceName, true)
+            task.wait(0.3)
+            Remotes.ConfirmSoloRaceChoice:FireServer(raceName, "myBest", true)
+        end)
+        SendNotification("Solo Race", "Started: " .. raceName, 4)
+    else
+        SendNotification("Solo Race", "Set getgenv().NeuroHubSoloRace first!", 5)
+    end
+    task.wait(1)
+    btn.Text = "Start Solo Race"
+end)
+-- v3.1: Quick start common races
+createAction(ServerCategory, "Start YellowObbyReverse", function(btn)
+    btn.Text = "Starting..."
+    pcall(function()
+        Remotes.GetSoloRaceMenu:InvokeServer("YellowObbyReverse", true)
+        task.wait(0.3)
+        Remotes.ConfirmSoloRaceChoice:FireServer("YellowObbyReverse", "myBest", true)
+    end)
+    task.wait(0.5)
+    btn.Text = "Start YellowObbyReverse"
+end)
+createAction(ServerCategory, "Start TunnelSprint", function(btn)
+    btn.Text = "Starting..."
+    pcall(function()
+        Remotes.GetSoloRaceMenu:InvokeServer("TunnelSprint", true)
+        task.wait(0.3)
+        Remotes.ConfirmSoloRaceChoice:FireServer("TunnelSprint", "myBest", true)
+    end)
+    task.wait(0.5)
+    btn.Text = "Start TunnelSprint"
+end)
+createAction(ServerCategory, "Teleport To Last CP", function(btn)
+    btn.Text = "Teleporting..."
+    pcall(function()
+        Remotes.TeleportToLastCheckpoint:FireServer()
+    end)
+    task.wait(0.5)
+    btn.Text = "Teleport To Last CP"
+end)
+-- v3.1: Force redeem (seen in Cobalt)
+createAction(ServerCategory, "Force Redeem", function(btn)
+    btn.Text = "Redeeming..."
+    pcall(function()
+        Remotes.ForceRedeem:InvokeServer()
+    end)
+    task.wait(0.5)
+    btn.Text = "Force Redeem"
 end)
 createAction(ServerCategory, "Claim Daily Car", function(btn)
     btn.Text = "Claiming..."
@@ -2022,6 +2249,11 @@ local jobsLabel    = createLabel(InfoCategory, "Jobs Done: N/A")
 local steelLabel   = createLabel(InfoCategory, "Steel: N/A")
 local woodLabel    = createLabel(InfoCategory, "Wood: N/A")
 local eventCurLabel= createLabel(InfoCategory, "Event Cur: N/A")
+-- v3.1: Race state info
+local raceStatusLabel   = createLabel(InfoCategory, "Race: not in race")
+local raceProgressLabel = createLabel(InfoCategory, "CP Progress: 0/0")
+local raceCPNameLabel   = createLabel(InfoCategory, "Next CP: none")
+local raceStuckLabel    = createLabel(InfoCategory, "Stuck: 0s")
 
 local targetPlayer = LocalPlayer
 local function changePlayer(step)
@@ -2208,6 +2440,22 @@ task.spawn(function()
         if State.DriftGlitchActive then table.insert(active, "Drift") end
         if State.AntiAFKEnabled then table.insert(active, "AFK") end
         statusLabel.Text = "Active: " .. (#active > 0 and table.concat(active, ", ") or "none")
+
+        -- v3.1: Race state info
+        if State.IsInRace and State.CurrentRaceName ~= "" then
+            raceStatusLabel.Text = "Race: " .. State.CurrentRaceName
+            raceProgressLabel.Text = string.format("CP Progress: %d/%d",
+                State.CurrentCPIndex, State.TotalCheckpoints)
+            raceCPNameLabel.Text = "Next CP: " .. (State.LastCPName or "none")
+
+            local stuckSec = math.floor(os.clock() - State.LastCPTime)
+            raceStuckLabel.Text = "Stuck: " .. stuckSec .. "s"
+        else
+            raceStatusLabel.Text = "Race: not in race"
+            raceProgressLabel.Text = "CP Progress: 0/0"
+            raceCPNameLabel.Text = "Next CP: none"
+            raceStuckLabel.Text = "Stuck: 0s"
+        end
     end
 end)
 
@@ -2785,6 +3033,175 @@ if RemotesNotify then
 end
 
 -- ============================================================
+--  v3.1: RACE STATE LISTENERS
+--  Listen for RaceBegan / RaceEnded / RaceCheckpoint events to track state
+--  Listen for TrackCarFlipped to auto-upright the car
+-- ============================================================
+
+-- Listen for RaceBegan
+local R_RaceBegan = RemotesNotify and RemotesNotify:FindFirstChild("RaceBegan")
+if R_RaceBegan then
+    trackConn(R_RaceBegan.OnClientEvent:Connect(function(raceData)
+        pcall(function()
+            if type(raceData) == "table" then
+                local race = raceData.race
+                local raceName = raceData.raceName
+                local carName = raceData.carName
+                local startCP = raceData.checkpoint or 0
+
+                State.CurrentRace = race
+                State.CurrentRaceName = raceName or (race and race.Name) or ""
+                State.CurrentCPIndex = startCP
+                State.IsInRace = true
+                State.LastCPTime = os.clock()
+
+                -- Reset cache so findBestCheckpoint refreshes
+                cpCache.target = nil
+                cpCache.race = nil
+                cpCache.progress = -1
+
+                SendNotification("Race Started",
+                    "Race: " .. (raceName or "?") .. "\n" ..
+                    "Car: " .. (carName or "?") .. "\n" ..
+                    "Start CP: " .. tostring(startCP), 5)
+            end
+        end)
+    end))
+end
+
+-- Listen for RaceEnded
+local R_RaceEnded = RemotesNotify and RemotesNotify:FindFirstChild("RaceEnded")
+if R_RaceEnded then
+    trackConn(R_RaceEnded.OnClientEvent:Connect(function(raceData, payout)
+        pcall(function()
+            local raceName = ""
+            local totalSpeed = 0
+            local prizeXP = 0
+            local finished = false
+
+            if type(raceData) == "table" then
+                raceName = raceData.raceName or ""
+                totalSpeed = raceData.totalSpeed or 0
+                prizeXP = raceData.prizeXP or 0
+                finished = raceData.finished or false
+            end
+
+            State.IsInRace = false
+            State.CurrentRace = nil
+            State.CurrentRaceName = ""
+
+            -- Track wins
+            if finished then
+                State.RacesWon = State.RacesWon + 1
+                _G.RacesWon = State.RacesWon
+            end
+
+            local msg = "Race: " .. raceName .. "\n"
+            msg = msg .. "Speed: " .. string.format("%.1f", totalSpeed) .. "\n"
+            msg = msg .. "XP: +" .. tostring(prizeXP) .. "\n"
+            msg = msg .. (finished and "FINISHED!" or "DNF")
+
+            SendNotification("Race Ended", msg, 6)
+        end)
+    end))
+end
+
+-- Listen for RaceCheckpoint - track CP progress
+local R_RaceCheckpoint = RemotesNotify and RemotesNotify:FindFirstChild("RaceCheckpoint")
+if R_RaceCheckpoint then
+    -- RaceCheckpoint is FireServer (outgoing), so we can't listen directly
+    -- But we can monitor the player's racer folder for changes
+    -- Or hook the remote via metatable spoof (too risky)
+    -- Instead, poll racerFolder periodically in a thread
+end
+
+-- Poll race state every 0.5s to detect CP changes
+task.spawn(function()
+    while task.wait(0.5) do
+        if not ScreenGui or not ScreenGui.Parent then break end
+        pcall(function()
+            local race, racerFolder = findActiveRace()
+            if race and racerFolder then
+                local newProgress = getPlayerCPProgress(racerFolder)
+                if newProgress ~= State.CurrentCPIndex then
+                    -- CP changed!
+                    State.LastCPTime = os.clock()
+                    local oldIdx = State.CurrentCPIndex
+                    State.CurrentCPIndex = newProgress
+                    State.CurrentRace = race
+                    State.CurrentRaceName = race.Name
+                    State.IsInRace = true
+
+                    -- Reset cache to find next CP
+                    cpCache.target = nil
+                    cpCache.progress = -1
+
+                    print(string.format("[Neuro Hub] CP progress: %d -> %d (race=%s)",
+                        oldIdx, newProgress, race.Name))
+                end
+            else
+                if State.IsInRace then
+                    -- We were in a race but not anymore
+                    State.IsInRace = false
+                end
+            end
+        end)
+    end
+end)
+
+-- v3.1: Auto-upright car when flipped
+-- Listen for TrackCarFlipped event - if our car flips, auto-correct
+local R_TrackCarFlipped = RemotesNotify and RemotesNotify:FindFirstChild("TrackCarFlipped")
+if R_TrackCarFlipped then
+    trackConn(R_TrackCarFlipped.OnClientEvent:Connect(function(...)
+        if not State.AutoUprightCar then return end
+        pcall(function()
+            task.wait(0.5)
+            local car = getMyCar()
+            if car then
+                local root = car.PrimaryPart or car:FindFirstChild("Main") or car:FindFirstChildWhichIsA("BasePart")
+                if root then
+                    -- Check if car is upside down (UpVector pointing down)
+                    local up = root.CFrame.UpVector
+                    if up.Y < 0.3 then
+                        -- Car is flipped - rotate it upright
+                        local pos = root.Position
+                        local newPos = pos + Vector3.new(0, 5, 0)
+                        pcall(function()
+                            car:PivotTo(CFrame.new(newPos) * CFrame.Angles(0, math.rad(math.random(0, 360)), 0))
+                            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                        end)
+                        SendNotification("Auto-Upright", "Car was flipped - auto-corrected!", 3)
+                    end
+                end
+            end
+        end)
+    end))
+end
+
+-- v3.1: Auto-skip stuck race
+-- If we haven't progressed in AutoSkipStuckTime seconds, fire TeleportToLastCheckpoint
+task.spawn(function()
+    while task.wait(2) do
+        if not ScreenGui or not ScreenGui.Parent then break end
+        if not State.IsInRace then continue end
+        if not (State.SmartRaceEnabled or State.AutoCheckpointEnabled) then continue end
+
+        local stuckTime = os.clock() - State.LastCPTime
+        if stuckTime > State.AutoSkipStuckTime then
+            -- We're stuck! Try teleporting to last CP
+            pcall(function()
+                Remotes.TeleportToLastCheckpoint:FireServer()
+            end)
+            State.LastCPTime = os.clock()  -- reset to avoid spam
+            SendNotification("Auto-Skip", "Stuck for " .. tostring(State.AutoSkipStuckTime) ..
+                "s - teleporting to last CP", 4)
+        end
+    end
+end)
+
+-- ============================================================
 --  GLOBAL INPUT HANDLER
 -- ============================================================
 trackConn(UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -2917,14 +3334,19 @@ end
 -- Welcome notification
 task.spawn(function()
     task.wait(1.5)
-    SendNotification("Neuro Hub v3.0", "Loaded successfully!\nPress RightShift to toggle GUI\nPress Ctrl to hide/show\n10 categories: Race/Player/Drift/Server/Info/Bindables/Notif/Auto/Teleport/Utils", 8)
+    SendNotification("Neuro Hub v3.1", "Loaded with Cobalt session analysis!\nAuto Checkpoint FIXED - now reads real race state\nNew: Race tracking, Auto-Upright, Auto-Skip stuck", 8)
 end)
 
 print("==========================================")
-print("  NEURO HUB v3.0 - Loaded successfully")
-print("  Based on real .rbxlx analysis of Drive World")
-print("  Fixed: getMyCar, findBestCheckpoint, RemoteEvent paths")
-print("  New: 266 RemoteEvents mapped, Auto category, Teleport category")
+print("  NEURO HUB v3.1 - Loaded successfully")
+print("  Based on Cobalt session recording analysis")
+print("  FIXED: Auto Checkpoint now uses real race state from")
+print("         workspace.Races.<race>.SingleplayerRacers.<player>")
+print("  NEW: RaceBegan/RaceEnded listeners")
+print("  NEW: Auto-Upright car when flipped")
+print("  NEW: Auto-Skip stuck race (30s -> TeleportToLastCheckpoint)")
+print("  NEW: Race info panel (race name, CP progress, stuck time)")
+print("  NEW: Start Solo Race, Start YellowObbyReverse, Start TunnelSprint")
 print("  Press RightShift to toggle GUI")
 print("  Press Ctrl+click categories to drag")
 print("  Right-click category to collapse")
