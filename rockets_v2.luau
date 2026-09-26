@@ -62,7 +62,7 @@ local ZOOM_MIN   = 0.5             -- мин зум (0.5 = от первого �
 local ZOOM_MAX   = 30              -- макс отдаление
 local ZOOM_START = 0.5             -- стартовый зум (0.5 = первое лицо)
 
-local CAM_OFFSET = Vector3.new(3, 4, 0)  -- точка "головы" ракеты
+local CAM_OFFSET = Vector3.new(0, 4, 3)  -- точка "головы" ракеты
 
 local HOLD_ANCHOR_TIME = 0.35      -- сколько держать V, чтобы заанчорить
 
